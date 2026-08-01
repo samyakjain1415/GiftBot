@@ -10,7 +10,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from core import agent, db, gifts, search
+from core import agent, db, gifts, prava, search
 
 calls: dict = {}
 
@@ -111,6 +111,26 @@ def test_affordable_never_empty():
     assert all(float(i["price"]) <= 30 for i in gifts._affordable(30.0))
 
 
+async def test_poll_survives_transient_outage():
+    """Prava's sandbox 504s intermittently; a blip must not abandon a live payment."""
+    attempts = {"n": 0}
+    real = prava.get_payment_result
+
+    async def flaky(session_id):
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise prava.PravaUnavailable("HTTP 504")
+        return ready_result()
+
+    prava.get_payment_result = flaky
+    try:
+        result = await prava.poll_until_ready("ses_x", interval=0, timeout=5)
+        assert result is not None, "must keep polling through a transient outage"
+        assert attempts["n"] == 3
+    finally:
+        prava.get_payment_result = real
+
+
 async def drive_to_gift_choice(user):
     """/start -> /test -> interests -> budget -> picks shown."""
     ev = lambda t: agent.NormalizedEvent(user_id=user, platform="test", text=t)
@@ -195,6 +215,7 @@ async def main():
     test_live_item_conversion()
     await test_search_without_key_is_silent()
     test_affordable_never_empty()
+    await test_poll_survives_transient_outage()
     await test_happy_path()
     await test_timeout_returns_to_gift_picker()
     await test_failed_payment_does_not_record_order()
