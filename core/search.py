@@ -34,6 +34,12 @@ def _slug(text: str, n: int = 24) -> str:
 
 
 def _to_item(raw: dict, index: int) -> dict | None:
+    """Shape one Serper row into a catalog item.
+
+    Note: Serper's `link` is always a Google Shopping listing URL, never the
+    merchant's own domain, so merchant_url points at the verifiable offer rather
+    than a guessed homepage. `source` is the real merchant name.
+    """
     price = _parse_price(raw.get("price"))
     title = (raw.get("title") or "").strip()
     merchant = (raw.get("source") or "").strip()
