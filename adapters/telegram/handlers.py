@@ -1,30 +1,48 @@
-import asyncio
+import logging
+
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
-from core.agent import NormalizedEvent, BotResponse, handle, complete_payment
+
+from core.agent import NormalizedEvent, BotResponse, handle, await_payment
+
+logger = logging.getLogger(__name__)
 
 
-def _build_keyboard(keyboard: list[tuple[str, str]]) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(label, callback_data=data)]
-        for label, data in keyboard
-    ])
+def _markup(response: BotResponse) -> InlineKeyboardMarkup | None:
+    if response.checkout_url:
+        return InlineKeyboardMarkup(
+            [[InlineKeyboardButton("💳 Pay with Prava", url=response.checkout_url)]]
+        )
+    if response.keyboard:
+        return InlineKeyboardMarkup(
+            [[InlineKeyboardButton(label, callback_data=data)] for label, data in response.keyboard]
+        )
+    return None
 
 
 async def _send(update: Update, response: BotResponse) -> None:
-    markup = _build_keyboard(response.keyboard) if response.keyboard else None
     target = update.message or (update.callback_query and update.callback_query.message)
     if target:
-        await target.reply_text(response.text, reply_markup=markup)
+        await target.reply_text(response.text, reply_markup=_markup(response))
 
 
 async def _handle_and_respond(update: Update, user_id: str, text: str) -> None:
     event = NormalizedEvent(user_id=user_id, platform="telegram", text=text)
-    response = handle(event)
+    try:
+        response = await handle(event)
+    except Exception:
+        logger.exception("handle failed for user %s", user_id)
+        await _send(update, BotResponse("⚠️ Couldn't reach Prava. Try again in a moment."))
+        return
+
     await _send(update, response)
-    if response.payment_pending:
-        await asyncio.sleep(2)
-        await _send(update, complete_payment(user_id))
+
+    if response.poll_session_id:
+        try:
+            await _send(update, await await_payment(user_id))
+        except Exception:
+            logger.exception("payment polling failed for user %s", user_id)
+            await _send(update, BotResponse("⚠️ Lost track of that payment. Pick a gift to retry."))
 
 
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
