@@ -1,0 +1,5 @@
+.env
+__pycache__/
+*.pyc
+giftbot.db
+.claude/settings.local.json
