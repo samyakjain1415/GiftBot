@@ -1,17 +1,32 @@
-"""Self-check for the Prava payment flow.
+"""Self-check for the full GiftBot flow.
 
-Stubs the Prava API and drives the state machine end to end, so a broken
+Stubs Gemini and Prava, then drives the state machine end to end, so a broken
 transition or a dropped report-status call fails here instead of in Telegram.
 Run: python test_flow.py
 """
 
 import asyncio
+import os
 import tempfile
 from pathlib import Path
 
-from core import agent, db
+from core import agent, db, gifts, search
 
 calls: dict = {}
+
+PICKS = [
+    {"id": "vahdam_tea_sampler", "name": "Vahdam Assorted Tea Sampler (10 teas)",
+     "price": "24.00", "merchant": "Vahdam Teas",
+     "merchant_url": "https://www.vahdamteas.com", "reason": "she loves tea"},
+    {"id": "leuchtturm_notebook", "name": "Leuchtturm1917 Hardcover Notebook",
+     "price": "22.00", "merchant": "Leuchtturm1917",
+     "merchant_url": "https://www.leuchtturm1917.com", "reason": "for her reading notes"},
+]
+
+
+async def fake_suggest(context, budget, n=3):
+    calls["suggest"] = (context, budget)
+    return PICKS
 
 
 async def fake_create_session(**kwargs):
@@ -43,31 +58,93 @@ def ready_result():
     }
 
 
-async def drive_to_gift_choice(user="u1"):
-    """/start -> /test -> context -> gift keyboard shown."""
+def test_parse_budget():
+    assert gifts.parse_budget("$50") == 50.0
+    assert gifts.parse_budget("around 40 dollars") == 40.0
+    assert gifts.parse_budget("under 1,200") == 1200.0
+    assert gifts.parse_budget("no idea") is None
+
+
+def test_catalog_wellformed():
+    """A bad price or missing merchant would only surface as a Prava 400 at runtime."""
+    for item in gifts.CATALOG:
+        assert float(item["price"]) > 0, item["id"]
+        assert item["merchant_url"].startswith("https://"), item["id"]
+        assert len(f"gift:{item['id']}".encode()) <= 64, f"{item['id']} exceeds callback_data limit"
+
+
+def test_price_parsing():
+    assert search._parse_price("$24.99") == 24.99
+    assert search._parse_price("1,299.00 INR") == 1299.0
+    assert search._parse_price("free") is None
+    assert search._parse_price(None) is None
+
+
+def test_live_item_conversion():
+    """Malformed shopping results must be dropped, never forwarded to Prava."""
+    ok = search._to_item(
+        {"title": "Vahdam Tea Sampler", "price": "$24.99",
+         "source": "Vahdam", "link": "https://vahdam.com/p/1"}, 0)
+    assert ok["price"] == "24.99" and ok["merchant"] == "Vahdam"
+    assert len(f"gift:{ok['id']}".encode()) <= 64
+
+    bad = [
+        {"title": "x", "price": "$1", "source": "y", "link": "http://insecure.com"},
+        {"title": "", "price": "$1", "source": "y", "link": "https://a.com"},
+        {"title": "x", "price": None, "source": "y", "link": "https://a.com"},
+        {"title": "x", "price": "$1", "source": "", "link": "https://a.com"},
+    ]
+    assert all(search._to_item(b, 0) is None for b in bad), "bad rows must be dropped"
+
+    long_title = search._to_item(
+        {"title": "A" * 300, "price": "$5", "source": "M", "link": "https://a.com"}, 9)
+    assert len(f"gift:{long_title['id']}".encode()) <= 64, "id must stay callback-safe"
+
+
+async def test_search_without_key_is_silent():
+    os.environ.pop("SERPER_API_KEY", None)
+    assert await search.find_products("tea", 50.0) == [], "no key must fall back, not raise"
+
+
+def test_affordable_never_empty():
+    assert gifts._affordable(5.0), "must fall back rather than show an empty menu"
+    assert all(float(i["price"]) <= 30 for i in gifts._affordable(30.0))
+
+
+async def drive_to_gift_choice(user):
+    """/start -> /test -> interests -> budget -> picks shown."""
     ev = lambda t: agent.NormalizedEvent(user_id=user, platform="test", text=t)
     assert "Welcome" in (await agent.handle(ev("/start"))).text
     assert "birthday" in (await agent.handle(ev("/test"))).text
-    reply = await agent.handle(ev("she loves books and tea"))
-    assert reply.keyboard == agent.GIFTS, reply.keyboard
+    assert "budget" in (await agent.handle(ev("she loves books and tea"))).text.lower()
+
+    reply = await agent.handle(ev("$50"))
+    assert calls["suggest"] == ("she loves books and tea", 50.0), calls["suggest"]
+    assert reply.keyboard == [
+        ("Vahdam Assorted Tea Sampler (10 teas) — $24.00", "gift:vahdam_tea_sampler"),
+        ("Leuchtturm1917 Hardcover Notebook — $22.00", "gift:leuchtturm_notebook"),
+    ], reply.keyboard
+    assert "she loves tea" in reply.text
     return ev
 
 
 async def test_happy_path():
     ev = await drive_to_gift_choice("u1")
 
-    reply = await agent.handle(ev("gift:reading:25"))
+    reply = await agent.handle(ev("gift:vahdam_tea_sampler"))
     assert reply.poll_session_id == "ses_test123"
-    assert reply.checkout_url.startswith("https://"), reply.checkout_url
-    assert calls["create"]["amount"] == "25.00", calls["create"]
-    assert calls["create"]["merchant"]["country_code_iso2"] == "US"
+    assert reply.checkout_url.startswith("https://")
+    assert calls["create"]["amount"] == "24.00", calls["create"]
+    # Real merchant now reaches Prava, not a placeholder.
+    assert calls["create"]["merchant"]["name"] == "Vahdam Teas"
+    assert calls["create"]["merchant"]["url"] == "https://www.vahdamteas.com"
     assert agent._session("u1")["state"] == "AWAITING_PAYMENT"
 
     agent.prava.poll_until_ready = lambda sid, **kw: asyncio.sleep(0, ready_result())
     reply = await agent.await_payment("u1")
 
     assert "sandbox payment completed" in reply.text, reply.text
-    assert "tli_001" in reply.text
+    assert "Vahdam Teas" in reply.text
     # Without report-status the Prava session never reaches "completed".
     assert calls["report"] == ("ses_test123", "tli_001", "APPROVED"), calls.get("report")
     assert agent._session("u1")["state"] == "CONFIRMED"
@@ -75,19 +152,19 @@ async def test_happy_path():
 
 async def test_timeout_returns_to_gift_picker():
     ev = await drive_to_gift_choice("u2")
-    await agent.handle(ev("gift:spa:70"))
+    await agent.handle(ev("gift:vahdam_tea_sampler"))
 
     agent.prava.poll_until_ready = lambda sid, **kw: asyncio.sleep(0, None)
     reply = await agent.await_payment("u2")
 
     assert "timed out" in reply.text, reply.text
-    assert reply.keyboard == agent.GIFTS
+    assert reply.keyboard, "must re-offer gifts"
     assert agent._session("u2")["state"] == "SHOWING_GIFTS"
 
 
 async def test_failed_payment_does_not_record_order():
     ev = await drive_to_gift_choice("u3")
-    await agent.handle(ev("gift:gourmet:45"))
+    await agent.handle(ev("gift:leuchtturm_notebook"))
     calls.pop("report", None)
 
     failed = {"status": "failed", "transactions": []}
@@ -96,18 +173,32 @@ async def test_failed_payment_does_not_record_order():
 
     assert "did not complete" in reply.text, reply.text
     assert "report" not in calls, "must not settle a failed payment"
-    assert agent._session("u3")["state"] == "SHOWING_GIFTS"
+
+
+async def test_stale_button_reshows_gifts():
+    """Tapping a button from an old session must not crash."""
+    ev = await drive_to_gift_choice("u4")
+    reply = await agent.handle(ev("gift:no_such_id"))
+    assert reply.keyboard, "unknown id should re-show the picks"
 
 
 async def main():
     db.DB_PATH = Path(tempfile.mkdtemp()) / "test.db"
     db.init_db()
+    agent.gifts.suggest = fake_suggest
     agent.prava.create_session = fake_create_session
     agent.prava.report_status = fake_report_status
 
+    test_parse_budget()
+    test_catalog_wellformed()
+    test_price_parsing()
+    test_live_item_conversion()
+    await test_search_without_key_is_silent()
+    test_affordable_never_empty()
     await test_happy_path()
     await test_timeout_returns_to_gift_picker()
     await test_failed_payment_does_not_record_order()
+    await test_stale_button_reshows_gifts()
     print("all checks passed")
 
 

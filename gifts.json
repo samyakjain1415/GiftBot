@@ -1,0 +1,185 @@
+{
+  "_note": "Curated gift catalog. Merchants with ucp:true are the participating UCP merchants Prava names in its docs — those items are the upgrade path to real UCP discovery/checkout if production access lands. Prices are indicative snapshots for the sandbox demo; at Level 2 the binding price comes from a UCP quote, not this file.",
+  "items": [
+    {
+      "id": "glossier_balm_trio",
+      "name": "Glossier Balm Dotcom Trio",
+      "price": "36.00",
+      "merchant": "Glossier",
+      "merchant_url": "https://www.glossier.com",
+      "ucp": true,
+      "tags": ["beauty", "skincare", "self-care", "cozy"]
+    },
+    {
+      "id": "glossier_you_perfume",
+      "name": "Glossier You Eau de Parfum",
+      "price": "72.00",
+      "merchant": "Glossier",
+      "merchant_url": "https://www.glossier.com",
+      "ucp": true,
+      "tags": ["beauty", "fragrance", "luxury", "romantic"]
+    },
+    {
+      "id": "harrys_shave_set",
+      "name": "Harry's Original Shave Gift Set",
+      "price": "30.00",
+      "merchant": "Harry's",
+      "merchant_url": "https://www.harrys.com",
+      "ucp": true,
+      "tags": ["grooming", "practical", "men"]
+    },
+    {
+      "id": "ridge_wallet",
+      "name": "Ridge Aluminium Slim Wallet",
+      "price": "95.00",
+      "merchant": "Ridge",
+      "merchant_url": "https://ridge.com",
+      "ucp": true,
+      "tags": ["edc", "minimalist", "practical", "tech", "luxury"]
+    },
+    {
+      "id": "everlane_cashmere_scarf",
+      "name": "Everlane Cashmere Scarf",
+      "price": "85.00",
+      "merchant": "Everlane",
+      "merchant_url": "https://www.everlane.com",
+      "ucp": true,
+      "tags": ["fashion", "cozy", "winter", "luxury"]
+    },
+    {
+      "id": "everlane_tote",
+      "name": "Everlane Canvas Day Tote",
+      "price": "48.00",
+      "merchant": "Everlane",
+      "merchant_url": "https://www.everlane.com",
+      "ucp": true,
+      "tags": ["fashion", "practical", "books", "everyday"]
+    },
+    {
+      "id": "alo_yoga_mat",
+      "name": "Alo Yoga Warrior Mat",
+      "price": "78.00",
+      "merchant": "Alo Yoga",
+      "merchant_url": "https://www.aloyoga.com",
+      "ucp": true,
+      "tags": ["fitness", "yoga", "wellness", "self-care"]
+    },
+    {
+      "id": "alo_headband_set",
+      "name": "Alo Yoga Sueded Headband Set",
+      "price": "28.00",
+      "merchant": "Alo Yoga",
+      "merchant_url": "https://www.aloyoga.com",
+      "ucp": true,
+      "tags": ["fitness", "yoga", "wellness", "budget"]
+    },
+    {
+      "id": "skims_lounge_set",
+      "name": "SKIMS Cozy Lounge Set",
+      "price": "88.00",
+      "merchant": "SKIMS",
+      "merchant_url": "https://skims.com",
+      "ucp": true,
+      "tags": ["cozy", "loungewear", "self-care", "luxury"]
+    },
+    {
+      "id": "steve_madden_crossbody",
+      "name": "Steve Madden Bevelyn Crossbody Bag",
+      "price": "68.00",
+      "merchant": "Steve Madden",
+      "merchant_url": "https://www.stevemadden.com",
+      "ucp": true,
+      "tags": ["fashion", "accessories", "everyday"]
+    },
+    {
+      "id": "vahdam_tea_sampler",
+      "name": "Vahdam Assorted Tea Sampler (10 teas)",
+      "price": "24.00",
+      "merchant": "Vahdam Teas",
+      "merchant_url": "https://www.vahdamteas.com",
+      "ucp": false,
+      "tags": ["tea", "cozy", "foodie", "budget"]
+    },
+    {
+      "id": "vahdam_chai_gift_box",
+      "name": "Vahdam Masala Chai Gift Box",
+      "price": "42.00",
+      "merchant": "Vahdam Teas",
+      "merchant_url": "https://www.vahdamteas.com",
+      "ucp": false,
+      "tags": ["tea", "chai", "cozy", "foodie"]
+    },
+    {
+      "id": "verve_coffee_trio",
+      "name": "Verve Coffee Roasters Three-Bag Sampler",
+      "price": "54.00",
+      "merchant": "Verve Coffee Roasters",
+      "merchant_url": "https://www.vervecoffee.com",
+      "ucp": false,
+      "tags": ["coffee", "foodie", "morning"]
+    },
+    {
+      "id": "leuchtturm_notebook",
+      "name": "Leuchtturm1917 Hardcover Notebook",
+      "price": "22.00",
+      "merchant": "Leuchtturm1917",
+      "merchant_url": "https://www.leuchtturm1917.com",
+      "ucp": false,
+      "tags": ["stationery", "writing", "books", "journaling", "budget"]
+    },
+    {
+      "id": "blackwing_pencil_set",
+      "name": "Blackwing Palomino Pencil Set",
+      "price": "26.00",
+      "merchant": "Blackwing",
+      "merchant_url": "https://blackwing602.com",
+      "ucp": false,
+      "tags": ["stationery", "writing", "books", "budget"]
+    },
+    {
+      "id": "book_of_the_month",
+      "name": "Book of the Month — 3 Month Gift",
+      "price": "50.00",
+      "merchant": "Book of the Month",
+      "merchant_url": "https://www.bookofthemonth.com",
+      "ucp": false,
+      "tags": ["books", "reading", "subscription"]
+    },
+    {
+      "id": "brooklinen_towel_set",
+      "name": "Brooklinen Super-Plush Towel Set",
+      "price": "79.00",
+      "merchant": "Brooklinen",
+      "merchant_url": "https://www.brooklinen.com",
+      "ucp": false,
+      "tags": ["home", "cozy", "self-care", "luxury"]
+    },
+    {
+      "id": "aesop_hand_duo",
+      "name": "Aesop Resurrection Hand Care Duo",
+      "price": "45.00",
+      "merchant": "Aesop",
+      "merchant_url": "https://www.aesop.com",
+      "ucp": false,
+      "tags": ["skincare", "self-care", "luxury", "home"]
+    },
+    {
+      "id": "diptyque_candle",
+      "name": "Diptyque Baies Scented Candle",
+      "price": "40.00",
+      "merchant": "Diptyque",
+      "merchant_url": "https://www.diptyqueparis.com",
+      "ucp": false,
+      "tags": ["home", "cozy", "candle", "self-care", "romantic"]
+    },
+    {
+      "id": "moleskine_reading_bundle",
+      "name": "Moleskine Classic Notebook + Reading Light",
+      "price": "34.00",
+      "merchant": "Moleskine",
+      "merchant_url": "https://www.moleskine.com",
+      "ucp": false,
+      "tags": ["books", "reading", "stationery", "cozy"]
+    }
+  ]
+}
