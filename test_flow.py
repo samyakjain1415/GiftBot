@@ -8,8 +8,10 @@ Run: python test_flow.py
 import asyncio
 import os
 import tempfile
+import time
 from pathlib import Path
 
+from adapters.linq import webhook as linq_webhook
 from core import agent, db, gifts, prava, search
 
 calls: dict = {}
@@ -109,6 +111,60 @@ async def test_search_without_key_is_silent():
 def test_affordable_never_empty():
     assert gifts._affordable(5.0), "must fall back rather than show an empty menu"
     assert all(float(i["price"]) <= 30 for i in gifts._affordable(30.0))
+
+
+def _signed(secret_key: bytes, webhook_id: str, timestamp: str, body: bytes) -> str:
+    import base64, hashlib, hmac
+    signed = f"{webhook_id}.{timestamp}.".encode() + body
+    return "v1," + base64.b64encode(hmac.new(secret_key, signed, hashlib.sha256).digest()).decode()
+
+
+def test_webhook_signature_verification():
+    """An unsigned or forged webhook must never reach the payment flow."""
+    import base64
+    key = b"0123456789abcdef0123456789abcdef"
+    secret = "whsec_" + base64.b64encode(key).decode()
+    body = b'{"event_type":"message.received"}'
+    now = str(int(time.time()))
+
+    good = {"webhook-id": "evt_1", "webhook-timestamp": now,
+            "webhook-signature": _signed(key, "evt_1", now, body)}
+    assert linq_webhook.verify_signature(good, body, secret)
+
+    forged = dict(good, **{"webhook-signature": "v1,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
+    assert not linq_webhook.verify_signature(forged, body, secret), "forged sig accepted"
+
+    tampered = linq_webhook.verify_signature(good, body + b"x", secret)
+    assert not tampered, "body tampering not detected"
+
+    stale = dict(good, **{"webhook-timestamp": str(int(time.time()) - 600)})
+    stale["webhook-signature"] = _signed(key, "evt_1", stale["webhook-timestamp"], body)
+    assert not linq_webhook.verify_signature(stale, body, secret), "replay window not enforced"
+
+    assert not linq_webhook.verify_signature({}, body, secret), "missing headers accepted"
+
+
+def test_keyboard_becomes_numbered_list():
+    """iMessage has no buttons, so options must survive as numbered text."""
+    phone = "+15551234567"
+    response = agent.BotResponse("Pick one:", keyboard=[("Tea — $24", "gift:tea"),
+                                                        ("Book — $22", "gift:book")])
+    text = linq_webhook.render(response, phone)
+    assert "1. Tea — $24" in text and "2. Book — $22" in text
+    assert "Reply with a number (1-2)" in text
+
+    assert linq_webhook.resolve(phone, "2") == "gift:book"
+    assert linq_webhook.resolve(phone, " 1 ") == "gift:tea"
+    assert linq_webhook.resolve(phone, "9") == "9", "out of range must pass through"
+    assert linq_webhook.resolve(phone, "hello") == "hello"
+    assert linq_webhook.resolve("+15559999999", "1") == "1", "unknown sender has no options"
+
+
+def test_checkout_url_included_as_link():
+    text = linq_webhook.render(
+        agent.BotResponse("Pay now", checkout_url="https://sandbox.collect.prava.space?session=x"),
+        "+15551112222")
+    assert "https://sandbox.collect.prava.space?session=x" in text
 
 
 async def test_poll_survives_transient_outage():
@@ -215,6 +271,9 @@ async def main():
     test_live_item_conversion()
     await test_search_without_key_is_silent()
     test_affordable_never_empty()
+    test_webhook_signature_verification()
+    test_keyboard_becomes_numbered_list()
+    test_checkout_url_included_as_link()
     await test_poll_survives_transient_outage()
     await test_happy_path()
     await test_timeout_returns_to_gift_picker()
