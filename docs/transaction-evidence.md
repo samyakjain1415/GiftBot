@@ -93,6 +93,7 @@ Sandbox reliability during the build, kept because it shaped the engineering.
 | 02 Aug 10:33 | Checkout fails at `FETCH_AGENTIC_CREDS_ERROR` — "Visa 400, Fetching cryptogram failed" |
 | 02 Aug 10:44 | Same error with a verified real merchant domain, ruling out the merchant URL |
 | 02 Aug ~10:50 | Prava confirmed the **team test card was exhausted**; card exhaustion surfaces as that cryptogram error, not as anything card-related |
+| 02 Aug 18:13 | Checkout succeeding again once the card's daily allowance reset — no code change, confirming the exhaustion diagnosis |
 
 This drove the resilience work: retries on transient 5xx only, polling that
 survives a mid-checkout outage, harder retries on `report-status` (losing it
