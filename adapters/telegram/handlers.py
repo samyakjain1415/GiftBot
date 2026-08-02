@@ -1,7 +1,9 @@
 import logging
+from html import escape
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.error import BadRequest
+from telegram.constants import ParseMode
+from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
 
 from core.agent import NormalizedEvent, BotResponse, handle, await_payment
@@ -27,10 +29,59 @@ def _markup(response: BotResponse) -> InlineKeyboardMarkup | None:
     return None
 
 
+CAPTION_LIMIT = 1024   # Telegram's cap on photo captions
+
+
+def _caption(card) -> str:
+    """Card as HTML. Every value is escaped — product titles come from the open
+    web and a stray & or < would otherwise reject the whole message."""
+    lines = [f"<b>{escape(card.title)}</b>", escape(card.subtitle)]
+    if card.blurb:
+        lines += ["", escape(card.blurb)]
+    if card.reason:
+        lines += ["", f"✨ {escape(card.reason)}"]
+    if card.link_url:
+        lines += ["", f'<a href="{escape(card.link_url, quote=True)}">🔗 View product</a>']
+    text = "\n".join(lines)
+    return text if len(text) <= CAPTION_LIMIT else text[:CAPTION_LIMIT - 1] + "…"
+
+
+async def _send_card(target, card) -> None:
+    """One product: photo with a caption and its own button.
+
+    Falls back to text if there is no image or the photo cannot be sent —
+    gstatic thumbnail URLs expire, and losing the product would be worse than
+    losing the picture.
+    """
+    markup = InlineKeyboardMarkup(
+        [[InlineKeyboardButton(card.action_label, callback_data=card.action_data)]]
+    )
+    caption = _caption(card)
+
+    if card.image_url:
+        try:
+            await target.reply_photo(
+                photo=card.image_url, caption=caption,
+                parse_mode=ParseMode.HTML, reply_markup=markup,
+            )
+            return
+        except TelegramError as exc:
+            logger.info("photo failed for %s (%s); sending as text", card.title[:40], exc)
+
+    await target.reply_text(
+        caption, parse_mode=ParseMode.HTML, reply_markup=markup,
+        disable_web_page_preview=False,
+    )
+
+
 async def _send(update: Update, response: BotResponse) -> None:
     target = update.message or (update.callback_query and update.callback_query.message)
-    if target:
+    if not target:
+        return
+    if response.text:
         await target.reply_text(response.text, reply_markup=_markup(response))
+    for card in response.cards or []:
+        await _send_card(target, card)
 
 
 async def _handle_and_respond(update: Update, user_id: str, text: str) -> None:

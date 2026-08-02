@@ -28,6 +28,21 @@ def _parse_price(raw) -> float | None:
         return None
 
 
+def _tidy_title(title: str, limit: int = 70) -> str:
+    """Shorten on a word boundary. Shopping titles are keyword-stuffed, and a
+    hard cut leaves things like 'Cozy Book Lover Gift, Surpr'."""
+    title = " ".join(title.split())
+    if len(title) <= limit:
+        return title
+    # Prefer cutting at a separator marketers already used.
+    for sep in (" | ", " - ", " – ", ", "):
+        head = title.split(sep)[0]
+        if 20 <= len(head) <= limit:
+            return head
+    cut = title[:limit].rsplit(" ", 1)[0]
+    return (cut or title[:limit]).rstrip(",;:-") + "…"
+
+
 def _slug(text: str, n: int = 24) -> str:
     """Short, callback_data-safe id (Telegram caps callback_data at 64 bytes)."""
     return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")[:n] or "item"
@@ -90,11 +105,12 @@ def _to_item(raw: dict, index: int) -> dict | None:
         return None
     return {
         "id": f"live{index}_{_slug(title)}",
-        "name": title[:80],
+        "name": _tidy_title(title),
         "price": f"{price:.2f}",
         "merchant": merchant[:60],
         "merchant_url": domain,
         "listing_url": link,          # Google Shopping page, for humans not Visa
+        "image_url": (raw.get("imageUrl") or "").strip() or None,
         "ucp": False,
         "live": True,
         "tags": [],

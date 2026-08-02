@@ -28,13 +28,27 @@ _SCHEMA = {
             "type": "array",
             "items": {
                 "type": "object",
-                "properties": {"id": {"type": "string"}, "reason": {"type": "string"}},
-                "required": ["id", "reason"],
+                "properties": {
+                    "id": {"type": "string"},
+                    "blurb": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["id", "blurb", "reason"],
             },
         }
     },
     "required": ["picks"],
 }
+
+# The model never sees a product description — only a title, price and merchant.
+# Anything richer than the title would be invented, and the user is about to
+# spend money against this text.
+_ACCURACY_RULE = (
+    "For 'blurb', describe only what the product title already states, in one "
+    "short sentence. Never invent materials, quantities, colours, flavours, "
+    "sizes or features that are not in the title. If the title is vague, keep "
+    "the blurb vague."
+)
 
 
 def parse_budget(text: str) -> float | None:
@@ -64,8 +78,9 @@ def _prompt(context: str, budget: float | None, pool: list[dict], n: int) -> str
         f"What we know about them: {context}\n"
         f"{budget_line}\n\n"
         f"Choose the {n} best gifts from this catalog. Use only these ids:\n{listing}\n\n"
-        f"For each pick give a short reason (max 12 words) connecting it to what we "
-        f"know about them. Be specific, not generic. Use they/them unless the notes "
+        f"{_ACCURACY_RULE}\n\n"
+        f"For 'reason', give at most 12 words connecting the gift to what we know "
+        f"about them. Be specific, not generic. Use they/them unless the notes "
         f"make the person's pronouns clear."
     )
 
@@ -102,7 +117,7 @@ async def suggest(context: str, budget: float | None, n: int = 3) -> list[dict]:
         return [{**item, "reason": "budget pick"} for item in fallback]
 
     chosen = [
-        {**by_id[p["id"]], "reason": p.get("reason", "")}
+        {**by_id[p["id"]], "reason": p.get("reason", ""), "blurb": p.get("blurb", "")}
         for p in picks
         if p.get("id") in by_id
     ]

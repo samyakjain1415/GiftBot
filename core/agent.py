@@ -28,9 +28,27 @@ class NormalizedEvent:
 
 
 @dataclass
+class Card:
+    """One product, described structurally so each adapter can render it its own way.
+
+    Core knows nothing about photos or captions — Telegram sends an image with a
+    button, iMessage prints a numbered block, and neither leaks back in here.
+    """
+    title: str
+    subtitle: str
+    blurb: str
+    reason: str
+    action_label: str
+    action_data: str
+    image_url: str | None = None
+    link_url: str | None = None
+
+
+@dataclass
 class BotResponse:
     text: str
     keyboard: list[tuple[str, str]] | None = None
+    cards: list[Card] | None = None
     checkout_url: str | None = None
     poll_session_id: str | None = None
 
@@ -41,20 +59,27 @@ def _session(user_id: str) -> dict:
     return _sessions[user_id]
 
 
-def _keyboard(picks: list[dict]) -> list[tuple[str, str]]:
-    return [(f"{p['name']} — ${p['price']}", f"gift:{p['id']}") for p in picks]
-
-
-def _picks_text(picks: list[dict]) -> str:
-    lines = [f"• *{p['name']}* (${p['price']}, {p['merchant']}) — {p['reason']}" for p in picks]
-    return "Here's what I'd pick:\n\n" + "\n".join(lines)
+def _to_card(pick: dict) -> Card:
+    return Card(
+        title=pick["name"],
+        subtitle=f"${pick['price']} · {pick['merchant']}",
+        blurb=pick.get("blurb", ""),
+        reason=pick.get("reason", ""),
+        action_label=f"Choose this — ${pick['price']}",
+        action_data=f"gift:{pick['id']}",
+        image_url=pick.get("image_url"),
+        link_url=pick.get("listing_url"),
+    )
 
 
 async def _show_gifts(sess: dict) -> BotResponse:
     picks = await gifts.suggest(sess.get("context", ""), sess.get("budget"))
     sess["picks"] = {p["id"]: p for p in picks}
     sess["state"] = "SHOWING_GIFTS"
-    return BotResponse(_picks_text(picks), keyboard=_keyboard(picks))
+    return BotResponse(
+        "Here's what I'd pick:",
+        cards=[_to_card(p) for p in picks],
+    )
 
 
 def _user_email(user_id: str) -> str:
@@ -199,7 +224,7 @@ async def _accept_context(sess: dict, db_user_id: int, friend_id: int, text: str
         reply = await _show_gifts(sess)
         return BotResponse(
             f"Got it — working to your ${cap:.0f} limit.\n\n{reply.text}",
-            keyboard=reply.keyboard,
+            cards=reply.cards,
         )
     sess["state"] = "ASKING_BUDGET"
     return BotResponse("Got it. What's your budget? (e.g. $50)")
@@ -244,4 +269,4 @@ async def await_payment(user_id: str) -> BotResponse:
 
 async def _retry(sess: dict, reason: str) -> BotResponse:
     response = await _show_gifts(sess)
-    return BotResponse(f"{reason} Pick again:", keyboard=response.keyboard)
+    return BotResponse(f"{reason} Pick again:", cards=response.cards)

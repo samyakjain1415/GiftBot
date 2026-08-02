@@ -64,14 +64,35 @@ def verify_signature(headers, raw_body: bytes, secret: str) -> bool:
 
 
 def render(response: BotResponse, phone: str) -> str:
-    """Flatten a BotResponse into text — no buttons exist on iMessage."""
+    """Flatten a BotResponse into text — iMessage has no buttons.
+
+    Cards carry the same copy as Telegram's image cards, minus the image:
+    attachments are supported by Linq but unverified, so they are a follow-on.
+    """
     text = response.text
-    if response.keyboard:
+
+    if response.cards:
+        _last_options[phone] = [c.action_data for c in response.cards]
+        blocks = []
+        for i, card in enumerate(response.cards, 1):
+            block = [f"{i}. {card.title} — {card.subtitle}"]
+            if card.blurb:
+                block.append(f"   {card.blurb}")
+            if card.reason:
+                block.append(f"   ✨ {card.reason}")
+            if card.link_url:
+                block.append(f"   View: {card.link_url}")
+            blocks.append("\n".join(block))
+        text += "\n\n" + "\n\n".join(blocks)
+        text += f"\n\nReply with a number (1-{len(response.cards)})."
+
+    elif response.keyboard:
         _last_options[phone] = [data for _, data in response.keyboard]
         options = "\n".join(
             f"{i}. {label}" for i, (label, _) in enumerate(response.keyboard, 1)
         )
         text += f"\n\n{options}\n\nReply with a number (1-{len(response.keyboard)})."
+
     if response.checkout_url:
         text += f"\n\n{response.checkout_url}"
     return text

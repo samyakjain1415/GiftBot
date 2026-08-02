@@ -13,6 +13,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from adapters.linq import webhook as linq_webhook
+from adapters.telegram import handlers as tg_handlers
 from adapters.web import onboarding
 from core import agent, calendars, db, gifts, prava, scheduler, search
 
@@ -97,6 +98,22 @@ def test_merchant_domain_derivation():
     assert search.merchant_domain("vahdamteas.com") == "https://vahdamteas.com"
     assert search.merchant_domain("") is None
     assert search.merchant_domain("-") is None
+
+
+def test_title_tidying():
+    """Shopping titles are keyword-stuffed; a hard cut reads as broken."""
+    assert search._tidy_title("Short Title") == "Short Title"
+
+    # Cut at a separator the seller already used.
+    assert search._tidy_title(
+        "Mystery Book Gift Set - Book Lover Gift Box with Candle, Tea & Cozy Socks | Book"
+    ) == "Mystery Book Gift Set"
+
+    # Otherwise break on a word boundary, never mid-word.
+    long = search._tidy_title("Supercalifragilistic " * 8)
+    assert len(long) <= 71 and not long.rstrip("…").endswith("Supercalifragilisti")
+
+    assert search._tidy_title("  spaced   out   title  ") == "spaced out title"
 
 
 def test_live_item_conversion():
@@ -208,6 +225,74 @@ def test_keyboard_becomes_numbered_list():
     assert linq_webhook.resolve(phone, "9") == "9", "out of range must pass through"
     assert linq_webhook.resolve(phone, "hello") == "hello"
     assert linq_webhook.resolve("+15559999999", "1") == "1", "unknown sender has no options"
+
+
+def _card(**over):
+    base = dict(title="Vahdam Tea Sampler", subtitle="$24.00 · Vahdam Teas",
+                blurb="A ten-tea sampler set.", reason="She drinks tea daily.",
+                action_label="Choose this — $24.00", action_data="gift:live0_tea",
+                image_url="https://img.example/x.jpg", link_url="https://shop.example/p")
+    base.update(over)
+    return agent.Card(**base)
+
+
+def test_card_built_from_pick():
+    card = agent._to_card({
+        "id": "live0_tea", "name": "Vahdam Tea Sampler", "price": "24.00",
+        "merchant": "Vahdam Teas", "blurb": "A ten-tea sampler set.",
+        "reason": "She drinks tea daily.", "image_url": "https://img/x.jpg",
+        "listing_url": "https://shop/p",
+    })
+    assert card.subtitle == "$24.00 · Vahdam Teas"
+    assert card.action_data == "gift:live0_tea"
+    assert len(card.action_data.encode()) <= 64
+
+    # Catalog items have no image or blurb; the card must still be usable.
+    bare = agent._to_card({"id": "cat_x", "name": "Candle", "price": "40.00",
+                           "merchant": "Diptyque"})
+    assert bare.image_url is None and bare.blurb == ""
+    assert bare.action_label == "Choose this — $40.00"
+
+
+def test_card_caption_escapes_web_content():
+    """Product titles come from the open web; an unescaped & or < would make
+    Telegram reject the whole message."""
+    caption = tg_handlers._caption(_card(
+        title="Ben & Jerry's <Gift> Box",
+        link_url="https://x.example/p?a=1&b=2",
+    ))
+    assert "Ben &amp; Jerry" in caption and "&lt;Gift&gt;" in caption
+    assert "a=1&amp;b=2" in caption
+    assert "<b>" in caption and "View product" in caption
+
+    # Overlong copy must be truncated to Telegram's caption limit.
+    long_caption = tg_handlers._caption(_card(blurb="x" * 3000))
+    assert len(long_caption) <= tg_handlers.CAPTION_LIMIT
+
+    # A card with nothing optional still renders.
+    minimal = tg_handlers._caption(_card(blurb="", reason="", link_url=None))
+    assert "Vahdam Tea Sampler" in minimal
+
+
+def test_cards_render_as_text_on_imessage():
+    phone = "+15550009999"
+    response = agent.BotResponse("Here's what I'd pick:", cards=[
+        _card(), _card(title="Notebook", action_data="gift:live1_nb"),
+    ])
+    text = linq_webhook.render(response, phone)
+    assert "1. Vahdam Tea Sampler — $24.00 · Vahdam Teas" in text, text
+    assert "A ten-tea sampler set." in text
+    assert "View: https://shop.example/p" in text
+    assert "Reply with a number (1-2)" in text
+    # The numbered reply must still resolve to the right product.
+    assert linq_webhook.resolve(phone, "2") == "gift:live1_nb"
+
+
+def test_blurb_constraint_is_in_the_prompt():
+    """Without this the model invents specs for a product it has never seen."""
+    prompt = gifts._prompt("likes tea", 50.0, gifts.CATALOG[:2], 3)
+    assert "Never invent" in prompt
+    assert "blurb" in prompt
 
 
 def test_checkout_url_included_as_link():
@@ -507,11 +592,12 @@ async def drive_to_gift_choice(user):
 
     reply = await agent.handle(ev("$50"))
     assert calls["suggest"] == ("she loves books and tea", 50.0), calls["suggest"]
-    assert reply.keyboard == [
-        ("Vahdam Assorted Tea Sampler (10 teas) — $24.00", "gift:vahdam_tea_sampler"),
-        ("Leuchtturm1917 Hardcover Notebook — $22.00", "gift:leuchtturm_notebook"),
-    ], reply.keyboard
-    assert "she loves tea" in reply.text
+    assert [c.action_data for c in reply.cards] == [
+        "gift:vahdam_tea_sampler", "gift:leuchtturm_notebook",
+    ], reply.cards
+    assert reply.cards[0].title == "Vahdam Assorted Tea Sampler (10 teas)"
+    assert reply.cards[0].subtitle == "$24.00 · Vahdam Teas"
+    assert reply.cards[0].reason == "she loves tea"
     return ev
 
 
@@ -545,7 +631,7 @@ async def test_timeout_returns_to_gift_picker():
     reply = await agent.await_payment("u2")
 
     assert "timed out" in reply.text, reply.text
-    assert reply.keyboard, "must re-offer gifts"
+    assert reply.cards, "must re-offer gifts"
     assert agent._session("u2")["state"] == "SHOWING_GIFTS"
 
 
@@ -566,7 +652,7 @@ async def test_stale_button_reshows_gifts():
     """Tapping a button from an old session must not crash."""
     ev = await drive_to_gift_choice("u4")
     reply = await agent.handle(ev("gift:no_such_id"))
-    assert reply.keyboard, "unknown id should re-show the picks"
+    assert reply.cards, "unknown id should re-show the picks"
 
 
 async def main():
@@ -580,6 +666,7 @@ async def main():
     test_catalog_wellformed()
     test_price_parsing()
     test_merchant_domain_derivation()
+    test_title_tidying()
     test_live_item_conversion()
     await test_search_without_key_is_silent()
     test_affordable_never_empty()
@@ -598,6 +685,10 @@ async def main():
     test_webhook_signature_verification()
     test_extract_real_linq_payload()
     test_keyboard_becomes_numbered_list()
+    test_card_built_from_pick()
+    test_card_caption_escapes_web_content()
+    test_cards_render_as_text_on_imessage()
+    test_blurb_constraint_is_in_the_prompt()
     test_checkout_url_included_as_link()
     await test_poll_survives_transient_outage()
     await test_happy_path()
