@@ -146,6 +146,25 @@ def due_reminders(platform: str, today: str | None = None) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def resume_reminder(user_id: int, within_days: int = 3) -> dict | None:
+    """The most recently fired reminder for this user, if it is still recent.
+
+    Conversation state lives in memory, so a restart between sending a reminder
+    and the user replying would otherwise strand them on "Type /start". This
+    lets the reply be recognised anyway.
+    """
+    cutoff = (date.today() - timedelta(days=within_days)).isoformat()
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT r.id, f.id AS friend_id, f.name, f.birthday"
+            "  FROM reminders r JOIN friends f ON f.id = r.friend_id"
+            " WHERE f.user_id = ? AND r.status = 'sent' AND r.fire_date >= ?"
+            " ORDER BY r.fire_date DESC, r.id DESC LIMIT 1",
+            (user_id, cutoff),
+        ).fetchone()
+        return dict(row) if row else None
+
+
 def claim_reminder(reminder_id: int) -> bool:
     """Mark a reminder sent. False if another worker already took it."""
     with get_conn() as conn:

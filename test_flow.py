@@ -84,12 +84,31 @@ def test_price_parsing():
     assert search._parse_price(None) is None
 
 
+def test_merchant_domain_derivation():
+    """Visa rejects aggregator URLs — FETCH_AGENTIC_CREDS_ERROR — so the merchant
+    domain must come from the seller name, not the Google Shopping link."""
+    assert search.merchant_domain("Godiva") == "https://www.godiva.com"
+    assert search.merchant_domain("Best Buy") == "https://www.bestbuy.com"
+    assert search.merchant_domain("Uncommon Goods") == "https://www.uncommongoods.com"
+    # Marketplace sellers resolve to the marketplace.
+    assert search.merchant_domain("Etsy - ElementalBonsai") == "https://www.etsy.com"
+    assert search.merchant_domain("Amazon.com") == "https://www.amazon.com"
+    # Already a domain.
+    assert search.merchant_domain("vahdamteas.com") == "https://vahdamteas.com"
+    assert search.merchant_domain("") is None
+    assert search.merchant_domain("-") is None
+
+
 def test_live_item_conversion():
     """Malformed shopping results must be dropped, never forwarded to Prava."""
     ok = search._to_item(
         {"title": "Vahdam Tea Sampler", "price": "$24.99",
-         "source": "Vahdam", "link": "https://vahdam.com/p/1"}, 0)
+         "source": "Vahdam", "link": "https://www.google.com/search?q=x"}, 0)
     assert ok["price"] == "24.99" and ok["merchant"] == "Vahdam"
+    # The Google link must never reach Prava as the merchant site.
+    assert ok["merchant_url"] == "https://www.vahdam.com", ok["merchant_url"]
+    assert "google.com" not in ok["merchant_url"]
+    assert ok["listing_url"].startswith("https://www.google.com")
     assert len(f"gift:{ok['id']}".encode()) <= 64
 
     bad = [
@@ -101,8 +120,12 @@ def test_live_item_conversion():
     assert all(search._to_item(b, 0) is None for b in bad), "bad rows must be dropped"
 
     long_title = search._to_item(
-        {"title": "A" * 300, "price": "$5", "source": "M", "link": "https://a.com"}, 9)
+        {"title": "A" * 300, "price": "$5", "source": "Macys", "link": "https://a.com"}, 9)
     assert len(f"gift:{long_title['id']}".encode()) <= 64, "id must stay callback-safe"
+
+    # A seller name too short to yield a plausible domain is unbuyable, so dropped.
+    assert search._to_item(
+        {"title": "x", "price": "$5", "source": "M", "link": "https://a.com"}, 0) is None
 
 
 async def test_search_without_key_is_silent():
@@ -243,6 +266,42 @@ async def test_scheduler_sends_once_and_only_to_reachable_users():
             (friend_id,),
         ).fetchall()
     assert len(pending) == 1 and pending[0]["fire_date"] > date.today().isoformat()
+
+
+async def test_reply_recovers_after_restart():
+    """A reminder fires, the process restarts, then the user replies. In-memory
+    state is gone, but the reply must still be understood."""
+    uid = db.upsert_user("tg_restart", "telegram")
+    birthday = (date.today() + timedelta(days=6)).isoformat()
+    with db.get_conn() as conn:
+        friend_id = conn.execute(
+            "INSERT INTO friends (user_id, name, birthday) VALUES (?, ?, ?)",
+            (uid, "Nikhil", birthday),
+        ).lastrowid
+    db.schedule_reminder(friend_id, birthday)
+
+    async def send(to, text):
+        pass
+
+    await scheduler.dispatch_due("telegram", send, lambda u, r: None)
+    assert db.resume_reminder(uid) is not None
+
+    # Simulate the restart: every session lost.
+    agent._sessions.pop("tg_restart", None)
+
+    reply = await agent.handle(
+        agent.NormalizedEvent(user_id="tg_restart", platform="telegram", text="loves cricket"))
+    assert "Type /start" not in reply.text, reply.text
+    assert "budget" in reply.text.lower() or reply.keyboard, reply.text
+
+    friends = {f["name"]: f for f in db.list_friends(uid)}
+    assert friends["Nikhil"]["context"] == "loves cricket", "context must still be saved"
+
+    # A user with no reminder still gets the normal prompt.
+    db.upsert_user("tg_nobody", "telegram")
+    idle = await agent.handle(
+        agent.NormalizedEvent(user_id="tg_nobody", platform="telegram", text="hello"))
+    assert "Type /start" in idle.text, idle.text
 
 
 def test_reminder_wording():
@@ -452,11 +511,13 @@ async def main():
     test_parse_budget()
     test_catalog_wellformed()
     test_price_parsing()
+    test_merchant_domain_derivation()
     test_live_item_conversion()
     await test_search_without_key_is_silent()
     test_affordable_never_empty()
     test_next_birthday_rolls_over()
     await test_scheduler_sends_once_and_only_to_reachable_users()
+    await test_reply_recovers_after_restart()
     test_reminder_wording()
     test_clean_friends_rejects_bad_input()
     test_setup_api_requires_a_valid_friend()

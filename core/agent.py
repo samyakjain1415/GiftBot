@@ -6,6 +6,7 @@ from core.db import (
     claim_setup,
     create_order,
     get_spend_cap,
+    resume_reminder,
     save_context,
     seed_ashna,
     upsert_user,
@@ -108,19 +109,7 @@ async def handle(event: NormalizedEvent) -> BotResponse:
         return BotResponse("🎂 Ashna's birthday is in 6 days! What are her interests or hobbies?")
 
     if state == "REMINDED":
-        save_context(sess["friend_id"], text)
-        sess["context"] = text
-        # Someone who set a cap during onboarding has already answered this.
-        cap = get_spend_cap(db_user_id)
-        if cap:
-            sess["budget"] = cap
-            reply = await _show_gifts(sess)
-            return BotResponse(
-                f"Got it — working to your ${cap:.0f} limit.\n\n{reply.text}",
-                keyboard=reply.keyboard,
-            )
-        sess["state"] = "ASKING_BUDGET"
-        return BotResponse("Got it. What's your budget? (e.g. $50)")
+        return await _accept_context(sess, db_user_id, sess["friend_id"], text)
 
     if state == "ASKING_BUDGET":
         sess["budget"] = gifts.parse_budget(text)
@@ -171,7 +160,34 @@ async def handle(event: NormalizedEvent) -> BotResponse:
     if state == "CONFIRMED":
         return BotResponse("Gift already sent! Type /test to try again.")
 
+    # Nothing in memory — but a reminder may have gone out from a process that
+    # has since restarted. Recover from the database instead of stranding them.
+    if text and not text.startswith("/"):
+        recent = resume_reminder(db_user_id)
+        if recent:
+            logger.info("resuming reminder %s for %s after lost session",
+                        recent["id"], event.user_id)
+            sess["friend_id"] = recent["friend_id"]
+            return await _accept_context(sess, db_user_id, recent["friend_id"], text)
+
     return BotResponse("Type /start or /test to begin.")
+
+
+async def _accept_context(sess: dict, db_user_id: int, friend_id: int, text: str) -> BotResponse:
+    """Store what we learned about the friend, then ask budget or go straight to gifts."""
+    save_context(friend_id, text)
+    sess["context"] = text
+    # Someone who set a cap during onboarding has already answered this.
+    cap = get_spend_cap(db_user_id)
+    if cap:
+        sess["budget"] = cap
+        reply = await _show_gifts(sess)
+        return BotResponse(
+            f"Got it — working to your ${cap:.0f} limit.\n\n{reply.text}",
+            keyboard=reply.keyboard,
+        )
+    sess["state"] = "ASKING_BUDGET"
+    return BotResponse("Got it. What's your budget? (e.g. $50)")
 
 
 async def await_payment(user_id: str) -> BotResponse:
