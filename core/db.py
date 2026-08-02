@@ -59,17 +59,24 @@ def upsert_user(telegram_id: str) -> int:
 
 
 def seed_ashna(user_id: int) -> int:
+    """Reuse this user's Ashna if present.
+
+    INSERT OR IGNORE cannot dedupe here — there is no UNIQUE constraint on
+    (user_id, name) — so every /test used to create another duplicate.
+    """
     birthday = (date.today() + timedelta(days=6)).isoformat()
     with get_conn() as conn:
-        conn.execute(
-            "INSERT OR IGNORE INTO friends (user_id, name, birthday) VALUES (?, 'Ashna', ?)",
-            (user_id, birthday),
-        )
         row = conn.execute(
-            "SELECT id FROM friends WHERE user_id = ? AND name = 'Ashna'",
+            "SELECT id FROM friends WHERE user_id = ? AND name = 'Ashna' ORDER BY id LIMIT 1",
             (user_id,),
         ).fetchone()
-        return row["id"]
+        if row:
+            return row["id"]
+        cur = conn.execute(
+            "INSERT INTO friends (user_id, name, birthday) VALUES (?, 'Ashna', ?)",
+            (user_id, birthday),
+        )
+        return cur.lastrowid
 
 
 def save_context(friend_id: int, context: str) -> None:
@@ -77,10 +84,12 @@ def save_context(friend_id: int, context: str) -> None:
         conn.execute("UPDATE friends SET context = ? WHERE id = ?", (context, friend_id))
 
 
-def create_order(friend_id: int, gift: str, amount: float) -> None:
+def create_order(friend_id: int, gift: str, amount: float, prava_txn: str | None = None) -> None:
+    """Record a settled order. prava_txn is the transaction evidence — persist it."""
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO orders (friend_id, gift, amount, status) VALUES (?, ?, ?, 'confirmed')",
-            (friend_id, gift, amount),
+            "INSERT INTO orders (friend_id, gift, amount, prava_txn, status)"
+            " VALUES (?, ?, ?, ?, 'confirmed')",
+            (friend_id, gift, amount, prava_txn),
         )
         conn.execute("UPDATE friends SET last_gift = ? WHERE id = ?", (gift, friend_id))

@@ -1,7 +1,10 @@
+import logging
 from dataclasses import dataclass, field
 
 from core import gifts, prava
 from core.db import upsert_user, seed_ashna, save_context, create_order
+
+logger = logging.getLogger(__name__)
 
 _sessions: dict[str, dict] = {}
 
@@ -93,6 +96,10 @@ async def handle(event: NormalizedEvent) -> BotResponse:
             "pending_amount": float(item["price"]),
             "session_id": session["session_id"],
         })
+        logger.info(
+            "created prava session %s for %s (%s, $%s)",
+            session["session_id"], event.user_id, item["merchant"], amount,
+        )
         return BotResponse(
             f"🔐 Prava sandbox checkout\n\n"
             f"{item['name']} — ${amount} from {item['merchant']}\n\n"
@@ -117,20 +124,27 @@ async def await_payment(user_id: str) -> BotResponse:
     sess = _session(user_id)
     session_id = sess["session_id"]
 
+    logger.info("polling prava session %s for %s", session_id, user_id)
     result = await prava.poll_until_ready(session_id)
     if result is None:
+        logger.warning("session %s timed out with no terminal status", session_id)
         return await _retry(sess, "⏳ Checkout timed out.")
 
+    logger.info("session %s reached status=%s", session_id, result.get("status"))
     line_item = prava.first_credentialed_line_item(result)
     if result.get("status") == "failed" or line_item is None:
+        logger.warning("session %s failed: %s", session_id, result)
         return await _retry(sess, "❌ Prava checkout did not complete.")
 
     # Prava issues a one-time card scoped to this merchant; actually charging the
     # merchant is the caller's job and needs UCP/production, so this reports the
     # sandbox outcome only. See gifts.json for the UCP upgrade path.
     await prava.report_status(session_id, line_item["txn_ref_id"], "APPROVED")
+    logger.info("settled session %s txn %s", session_id, line_item["txn_ref_id"])
 
-    create_order(sess["friend_id"], sess["pending_gift"], sess["pending_amount"])
+    create_order(
+        sess["friend_id"], sess["pending_gift"], sess["pending_amount"], line_item["txn_ref_id"]
+    )
     sess["state"] = "CONFIRMED"
     return BotResponse(
         f"✅ Prava sandbox payment completed — test mode\n\n"

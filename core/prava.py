@@ -103,12 +103,17 @@ async def report_status(session_id: str, txn_ref_id: str, txn_status: str = "APP
 
 
 async def poll_until_ready(
-    session_id: str, interval: float = 2.0, timeout: float = 180.0
+    session_id: str, interval: float = 3.0, timeout: float = 780.0
 ) -> dict | None:
     """Poll until credentials are issued. Returns None on timeout.
 
-    ponytail: fixed 2s/180s cadence — docs recommend none. Swap for webhooks
-    once Prava ships delivery.
+    Timeout tracks the session's own 15-minute life rather than an arbitrary
+    shorter window: entering a card, an OTP and a passkey routinely takes
+    longer than a few minutes, and giving up early strands a payment the user
+    is still completing.
+
+    ponytail: fixed cadence — docs recommend none. Swap for webhooks once
+    Prava ships delivery.
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
