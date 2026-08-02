@@ -97,7 +97,9 @@ def _sms_link(token: str) -> str | None:
     number = _linq_number()
     if not number:
         return None
-    return f"sms:{number}&body=" + quote(f"/start {token}")
+    # "?&" not "&": RFC 5724 wants the query to start with "?" (Android drops
+    # the body otherwise, or folds it into the recipient), and iOS accepts both.
+    return f"sms:{number}?&body=" + quote(f"/start {token}")
 
 
 def calendar_start(provider: str, token: str) -> tuple[int, str]:

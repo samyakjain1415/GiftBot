@@ -382,7 +382,10 @@
 
 <script>
 (function () {
-  var KEY = 'giftbot.setup.v1';
+  // v2: v1 cached sms: links built with "&body=", which Android folds into the
+  // recipient. Bumping the key discards them rather than asking testers to
+  // clear site data.
+  var KEY = 'giftbot.setup.v2';
   var step = 1;
   var friends = [];
   var CHANNELS = { telegram: 'Telegram', imessage: 'SMS / iMessage' };
