@@ -2,7 +2,7 @@ import logging
 from dataclasses import dataclass, field
 
 from core import gifts, prava
-from core.db import upsert_user, seed_ashna, save_context, create_order
+from core.db import claim_setup, create_order, save_context, seed_ashna, upsert_user
 
 logger = logging.getLogger(__name__)
 
@@ -47,15 +47,53 @@ async def _show_gifts(sess: dict) -> BotResponse:
     return BotResponse(_picks_text(picks), keyboard=_keyboard(picks))
 
 
+def begin_reminder(user_id: str, reminder: dict) -> None:
+    """Prime a session so the reply to a proactive reminder lands in the flow.
+
+    Without this the user answers "she likes tea" and the bot, having no session,
+    responds "Type /start or /test to begin."
+    """
+    sess = _session(user_id)
+    sess.update({"state": "REMINDED", "friend_id": reminder["friend_id"]})
+
+
 async def handle(event: NormalizedEvent) -> BotResponse:
-    db_user_id = upsert_user(event.user_id)
+    db_user_id = upsert_user(event.user_id, event.platform)
     sess = _session(event.user_id)
     state = sess["state"]
     text = (event.text or "").strip()
 
-    if text == "/start":
+    if text.startswith("/start"):
         sess["state"] = "IDLE"
-        return BotResponse("Welcome to GiftBot! Use /test to try a gift reminder.")
+        token = text[len("/start"):].strip()
+        if not token:
+            return BotResponse("Welcome to GiftBot! Use /test to try a gift reminder.")
+
+        payload = claim_setup(token, db_user_id)
+        if payload is None:
+            # Tokens are single-use, so a second tap of the same link lands here.
+            logger.info("unclaimable setup token from %s", event.user_id)
+            return BotResponse(
+                "That setup link was already used or has expired. "
+                "Run through the setup page again for a fresh one."
+            )
+
+        friends = payload.get("friends", [])
+        if payload.get("cap"):
+            sess["budget"] = float(payload["cap"])
+        logger.info("claimed setup for %s with %d friend(s)", event.user_id, len(friends))
+
+        listed = "\n".join(f"• {f['name']} — {f['date']}" for f in friends[:10])
+        extra = f"\n…and {len(friends) - 10} more" if len(friends) > 10 else ""
+        budget_line = (
+            f"\n\nSpending limit: ${float(payload['cap']):.0f} per gift."
+            if payload.get("cap") else ""
+        )
+        return BotResponse(
+            f"✅ You're connected! I've saved {len(friends)} birthday"
+            f"{'s' if len(friends) != 1 else ''}:\n\n{listed}{extra}{budget_line}\n\n"
+            f"I'll message you when one is coming up. Try /test to see how it works."
+        )
 
     if text == "/test":
         friend_id = seed_ashna(db_user_id)

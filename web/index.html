@@ -206,6 +206,12 @@
   }
   .tg-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
+  .tiny-status {
+    font-size: 12.5px; color: var(--muted); margin: 20px 0 0;
+    min-height: 1.2em;
+  }
+  .tiny-status.err { color: #f87171; }
+
   .reset {
     width: auto; margin: 14px auto 0; padding: 7px 14px;
     background: transparent; border-color: transparent;
@@ -359,9 +365,9 @@
         GiftBot will message you on Telegram when a birthday is coming up.
         Nothing more to do here — close this tab.
       </p>
-      <a class="tg-link" href="https://t.me/GiftingPalBot" target="_blank" rel="noopener">
-        Open GiftBot in Telegram
-      </a>
+      <p id="link-status" class="tiny-status">Preparing your link…</p>
+      <a class="tg-link" id="tg-link" href="https://t.me/GiftingPalBot"
+         target="_blank" rel="noopener">Open GiftBot in Telegram</a>
       <button type="button" id="reset" class="reset">Start over</button>
     </div>
   </section>
@@ -558,8 +564,43 @@
   });
 
   // --- nav ---
+  // Hand the payload to the backend and swap in a deep link carrying the token,
+  // so the bot can tie this browser session to a Telegram account on /start.
+  function finish() {
+    var status = $('#link-status');
+    var link = $('#tg-link');
+    status.classList.remove('err');
+    status.textContent = 'Preparing your link…';
+
+    fetch('/api/setup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ friends: friends, cap: state.cap })
+    }).then(function (r) {
+      return r.json().then(function (d) { return { ok: r.ok, data: d }; });
+    }).then(function (res) {
+      if (!res.ok || !res.data.deep_link) {
+        throw new Error(res.data && res.data.error ? res.data.error : 'setup failed');
+      }
+      link.href = res.data.deep_link;
+      status.textContent = 'Tap below to finish in Telegram.';
+    }).catch(function (err) {
+      // Opened as a bare file, or the server is down — the plain bot link still
+      // works, the user just has to add friends in chat.
+      status.classList.add('err');
+      status.textContent = 'Could not save your setup (' + err.message +
+        '). The link below still opens the bot.';
+    });
+  }
+
   $('#next').addEventListener('click', function () {
-    if (step < 4 && complete(step)) { step++; save(); render(); window.scrollTo(0, 0); }
+    if (step < 4 && complete(step)) {
+      step++;
+      save();
+      render();
+      window.scrollTo(0, 0);
+      if (step === 4) finish();
+    }
   });
   $('#back').addEventListener('click', function () {
     if (step > 1) { step--; save(); render(); window.scrollTo(0, 0); }

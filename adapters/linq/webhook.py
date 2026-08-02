@@ -14,7 +14,6 @@ import logging
 import os
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from adapters.linq import client
 from core.agent import BotResponse, NormalizedEvent, await_payment, handle
@@ -150,36 +149,21 @@ def _process(payload: dict) -> None:
         logger.exception("linq conversation failed for %s", phone)
 
 
-class Handler(BaseHTTPRequestHandler):
-    secret = ""
+def handle_delivery(headers, raw: bytes) -> int:
+    """Verify and dispatch one webhook delivery. Returns the HTTP status to send.
 
-    def do_POST(self):  # noqa: N802 — stdlib naming
-        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+    Work happens on a worker thread: Linq wants a fast 200, and the flow can
+    take minutes while the user completes a Prava checkout.
+    """
+    secret = os.environ["LINQ_WEBHOOK_SECRET"]
+    if not verify_signature(headers, raw, secret):
+        logger.warning("rejected webhook with bad signature")
+        return 401
 
-        if not verify_signature(self.headers, raw, self.secret):
-            logger.warning("rejected webhook with bad signature")
-            self.send_response(401)
-            self.end_headers()
-            return
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return 400
 
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError:
-            self.send_response(400)
-            self.end_headers()
-            return
-
-        # Acknowledge before working: Linq wants a fast 200, and the flow can
-        # take minutes while the user completes a Prava checkout.
-        self.send_response(200)
-        self.end_headers()
-        threading.Thread(target=_process, args=(payload,), daemon=True).start()
-
-    def log_message(self, *args):
-        pass  # stdlib logs every request to stderr; we have real logging
-
-
-def serve(port: int = 8080) -> None:
-    Handler.secret = os.environ["LINQ_WEBHOOK_SECRET"]
-    logger.info("Linq webhook listening on port %s", port)
-    ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
+    threading.Thread(target=_process, args=(payload,), daemon=True).start()
+    return 200

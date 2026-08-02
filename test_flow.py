@@ -9,10 +9,12 @@ import asyncio
 import os
 import tempfile
 import time
+from datetime import date, timedelta
 from pathlib import Path
 
 from adapters.linq import webhook as linq_webhook
-from core import agent, db, gifts, prava, search
+from adapters.web import onboarding
+from core import agent, db, gifts, prava, scheduler, search
 
 calls: dict = {}
 
@@ -192,6 +194,135 @@ def test_checkout_url_included_as_link():
     assert "https://sandbox.collect.prava.space?session=x" in text
 
 
+def test_next_birthday_rolls_over():
+    today = date(2026, 8, 2)
+    # Birth year in the past — next occurrence is this year if still ahead.
+    assert db.next_birthday("1999-12-25", today) == date(2026, 12, 25)
+    # Already passed this year — roll to next.
+    assert db.next_birthday("1999-01-05", today) == date(2027, 1, 5)
+    # Today counts as upcoming, not missed.
+    assert db.next_birthday("1990-08-02", today) == date(2026, 8, 2)
+    assert db.next_birthday("garbage", today) is None
+    assert db.next_birthday(None, today) is None
+
+
+async def test_scheduler_sends_once_and_only_to_reachable_users():
+    uid = db.upsert_user("+15550001111", "linq")
+    birthday = (date.today() + timedelta(days=6)).isoformat()
+    with db.get_conn() as conn:
+        friend_id = conn.execute(
+            "INSERT INTO friends (user_id, name, birthday) VALUES (?, ?, ?)",
+            (uid, "Priya", birthday),
+        ).lastrowid
+
+    assert db.schedule_reminder(friend_id, birthday) == date.today().isoformat()
+
+    assert any(r["friend_id"] == friend_id for r in db.due_reminders("linq"))
+    # A Telegram worker must not claim a reminder it cannot deliver.
+    assert not any(r["friend_id"] == friend_id for r in db.due_reminders("telegram"))
+
+    sent, primed = [], []
+
+    async def send(to, text):
+        sent.append((to, text))
+
+    await scheduler.dispatch_due("linq", send, lambda uid_, row: primed.append(uid_))
+    assert sent and "Priya" in sent[0][1], sent
+    assert sent[0][0] == "+15550001111"
+    assert primed == ["+15550001111"], "session must be primed or the reply is orphaned"
+
+    # Running again must not resend — claiming is what prevents duplicates.
+    sent.clear()
+    await scheduler.dispatch_due("linq", send)
+    assert not any("Priya" in t for _, t in sent), "reminder was sent twice"
+
+    # Next year's reminder should already be queued.
+    with db.get_conn() as conn:
+        pending = conn.execute(
+            "SELECT fire_date FROM reminders WHERE friend_id = ? AND status = 'pending'",
+            (friend_id,),
+        ).fetchall()
+    assert len(pending) == 1 and pending[0]["fire_date"] > date.today().isoformat()
+
+
+def test_reminder_wording():
+    today = date(2026, 8, 2)
+    assert "in 6 days" in scheduler.reminder_text("Ashna", "1999-08-08", today)
+    assert "tomorrow" in scheduler.reminder_text("Ashna", "1999-08-03", today)
+    assert "today" in scheduler.reminder_text("Ashna", "1999-08-02", today)
+
+
+def test_clean_friends_rejects_bad_input():
+    """This payload comes from the open web — malformed entries must be dropped."""
+    good = onboarding._clean_friends([
+        {"name": "Ashna", "date": "2026-08-07"},
+        {"name": "  Ravi  ", "date": "1999-12-01"},
+    ])
+    assert [f["name"] for f in good] == ["Ashna", "Ravi"], good
+
+    bad = onboarding._clean_friends([
+        {"name": "", "date": "2026-08-07"},
+        {"name": "NoDate"},
+        {"name": "Bad", "date": "07/08/2026"},
+        {"name": "Bad2", "date": "not-a-date"},
+        "not a dict",
+        {"name": "Bad3", "date": "20260807"},
+    ])
+    assert bad == [], bad
+
+    assert onboarding._clean_friends("nonsense") == []
+    assert onboarding._clean_friends(None) == []
+
+    # Oversized name truncated, not rejected outright.
+    long_name = onboarding._clean_friends([{"name": "A" * 500, "date": "2026-01-01"}])
+    assert len(long_name[0]["name"]) <= 60
+
+    # Flood protection.
+    many = onboarding._clean_friends(
+        [{"name": "P%d" % i, "date": "2026-01-01"} for i in range(500)])
+    assert len(many) <= 50
+
+
+def test_setup_api_requires_a_valid_friend():
+    status, body = onboarding.create_setup_token(b'{"friends": []}')
+    assert status == 400, body
+    status, _ = onboarding.create_setup_token(b'not json')
+    assert status == 400
+    status, _ = onboarding.create_setup_token(b'{"friends":[{"name":"X","date":"2026-01-01"}]}')
+    assert status == 200
+
+
+def test_setup_token_is_single_use():
+    token = db.create_setup({"friends": [{"name": "Meera", "date": "2026-09-09"}], "cap": 40})
+    uid = db.upsert_user("web_user_1")
+
+    payload = db.claim_setup(token, uid)
+    assert payload and payload["cap"] == 40
+    assert [f["name"] for f in db.list_friends(uid)] == ["Meera"]
+
+    # A replayed link must not re-apply.
+    assert db.claim_setup(token, uid) is None
+    assert db.claim_setup("never-issued", uid) is None
+
+
+async def test_start_with_token_onboards_user():
+    token = db.create_setup(
+        {"friends": [{"name": "Dev", "date": "2026-10-10"}], "cap": 60})
+    reply = await agent.handle(
+        agent.NormalizedEvent(user_id="tg_web_1", platform="test", text="/start " + token))
+    assert "connected" in reply.text.lower(), reply.text
+    assert "Dev" in reply.text
+    assert agent._session("tg_web_1")["budget"] == 60.0
+
+    replay = await agent.handle(
+        agent.NormalizedEvent(user_id="tg_web_2", platform="test", text="/start " + token))
+    assert "already used" in replay.text.lower(), replay.text
+
+    plain = await agent.handle(
+        agent.NormalizedEvent(user_id="tg_web_3", platform="test", text="/start"))
+    assert "Welcome" in plain.text
+
+
 async def test_poll_survives_transient_outage():
     """Prava's sandbox 504s intermittently; a blip must not abandon a live payment."""
     attempts = {"n": 0}
@@ -296,6 +427,13 @@ async def main():
     test_live_item_conversion()
     await test_search_without_key_is_silent()
     test_affordable_never_empty()
+    test_next_birthday_rolls_over()
+    await test_scheduler_sends_once_and_only_to_reachable_users()
+    test_reminder_wording()
+    test_clean_friends_rejects_bad_input()
+    test_setup_api_requires_a_valid_friend()
+    test_setup_token_is_single_use()
+    await test_start_with_token_onboards_user()
     test_webhook_signature_verification()
     test_extract_real_linq_payload()
     test_keyboard_becomes_numbered_list()

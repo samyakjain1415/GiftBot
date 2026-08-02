@@ -1,5 +1,7 @@
+import json
+import secrets
 import sqlite3
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 DB_PATH = Path("giftbot.db")
@@ -43,19 +45,111 @@ def init_db() -> None:
                 prava_txn   TEXT,
                 status      TEXT    NOT NULL DEFAULT 'pending'
             );
+            -- Onboarding handoff: the web page has no idea who the user is on
+            -- Telegram, so it parks its payload against a one-time token that
+            -- the bot redeems via /start <token>.
+            CREATE TABLE IF NOT EXISTS setups (
+                token       TEXT    PRIMARY KEY,
+                payload     TEXT    NOT NULL,
+                created_at  TEXT    NOT NULL,
+                claimed_by  INTEGER REFERENCES users(id)
+            );
         """)
 
 
-def upsert_user(telegram_id: str) -> int:
+def upsert_user(external_id: str, platform: str = "telegram") -> int:
+    """Return the user id for this external id, creating the row if needed.
+
+    external_id is the Telegram user id or the Linq phone number. The platform
+    matters: the scheduler has to know which adapter can reach this person.
+    """
     with get_conn() as conn:
         conn.execute(
-            "INSERT OR IGNORE INTO users (telegram_id, platform) VALUES (?, 'telegram')",
-            (telegram_id,),
+            "INSERT OR IGNORE INTO users (telegram_id, platform) VALUES (?, ?)",
+            (external_id, platform),
+        )
+        # Existing rows predate the platform argument and all claim 'telegram'.
+        conn.execute(
+            "UPDATE users SET platform = ? WHERE telegram_id = ? AND platform != ?",
+            (platform, external_id, platform),
         )
         row = conn.execute(
-            "SELECT id FROM users WHERE telegram_id = ?", (telegram_id,)
+            "SELECT id FROM users WHERE telegram_id = ?", (external_id,)
         ).fetchone()
         return row["id"]
+
+
+def next_birthday(birthday: str, today: date | None = None) -> date | None:
+    """Next occurrence of a stored birthday (year may be a birth year)."""
+    today = today or date.today()
+    try:
+        parsed = date.fromisoformat(birthday)
+    except (ValueError, TypeError):
+        return None
+    try:
+        this_year = parsed.replace(year=today.year)
+    except ValueError:
+        return None  # 29 Feb in a non-leap year
+    if this_year >= today:
+        return this_year
+    try:
+        return parsed.replace(year=today.year + 1)
+    except ValueError:
+        return None
+
+
+def schedule_reminder(
+    friend_id: int, birthday: str, lead_days: int = 6, from_date: date | None = None
+) -> str | None:
+    """Queue one pending reminder ahead of a friend's next birthday.
+
+    Replaces any existing pending row for that friend so an edited birthday
+    doesn't leave a stale reminder behind.
+
+    from_date moves the reference point forward. After firing a reminder the
+    caller must pass a date past that birthday, otherwise next_birthday returns
+    the same occurrence and the reminder becomes due again on the next tick —
+    which resends forever.
+    """
+    upcoming = next_birthday(birthday, from_date)
+    if upcoming is None:
+        return None
+    fire = (upcoming - timedelta(days=lead_days)).isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            "DELETE FROM reminders WHERE friend_id = ? AND status = 'pending'", (friend_id,)
+        )
+        conn.execute(
+            "INSERT INTO reminders (friend_id, fire_date, status) VALUES (?, ?, 'pending')",
+            (friend_id, fire),
+        )
+    return fire
+
+
+def due_reminders(platform: str, today: str | None = None) -> list[dict]:
+    """Pending reminders that have come due, for users on this platform."""
+    today = today or date.today().isoformat()
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT r.id, r.fire_date, f.id AS friend_id, f.name, f.birthday,"
+            "       u.telegram_id AS external_id"
+            "  FROM reminders r"
+            "  JOIN friends f ON f.id = r.friend_id"
+            "  JOIN users   u ON u.id = f.user_id"
+            " WHERE r.status = 'pending' AND r.fire_date <= ? AND u.platform = ?",
+            (today, platform),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def claim_reminder(reminder_id: int) -> bool:
+    """Mark a reminder sent. False if another worker already took it."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE reminders SET status = 'sent' WHERE id = ? AND status = 'pending'",
+            (reminder_id,),
+        )
+        return cur.rowcount == 1
 
 
 def seed_ashna(user_id: int) -> int:
@@ -82,6 +176,69 @@ def seed_ashna(user_id: int) -> int:
 def save_context(friend_id: int, context: str) -> None:
     with get_conn() as conn:
         conn.execute("UPDATE friends SET context = ? WHERE id = ?", (context, friend_id))
+
+
+def create_setup(payload: dict) -> str:
+    """Park an onboarding payload against a one-time token. Returns the token."""
+    token = secrets.token_urlsafe(16)
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO setups (token, payload, created_at) VALUES (?, ?, ?)",
+            (token, json.dumps(payload), datetime.now(timezone.utc).isoformat()),
+        )
+    return token
+
+
+def claim_setup(token: str, user_id: int) -> dict | None:
+    """Redeem a setup token for a user, creating their friends.
+
+    Returns the payload, or None if the token is unknown or already claimed —
+    a token must never be usable twice.
+    """
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT payload FROM setups WHERE token = ? AND claimed_by IS NULL", (token,)
+        ).fetchone()
+        if row is None:
+            return None
+        conn.execute("UPDATE setups SET claimed_by = ? WHERE token = ?", (user_id, token))
+        payload = json.loads(row["payload"])
+
+        scheduled = []
+        for friend in payload.get("friends", []):
+            name, birthday = friend.get("name"), friend.get("date")
+            if not (name and birthday):
+                continue
+            existing = conn.execute(
+                "SELECT id FROM friends WHERE user_id = ? AND name = ?", (user_id, name)
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE friends SET birthday = ? WHERE id = ?", (birthday, existing["id"])
+                )
+                friend_id = existing["id"]
+            else:
+                cur = conn.execute(
+                    "INSERT INTO friends (user_id, name, birthday) VALUES (?, ?, ?)",
+                    (user_id, name, birthday),
+                )
+                friend_id = cur.lastrowid
+            scheduled.append((friend_id, birthday))
+
+    # Outside the transaction above: schedule_reminder opens its own connection.
+    for friend_id, birthday in scheduled:
+        schedule_reminder(friend_id, birthday)
+    return payload
+
+
+def list_friends(user_id: int) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, name, birthday, context, last_gift FROM friends"
+            " WHERE user_id = ? ORDER BY name",
+            (user_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def create_order(friend_id: int, gift: str, amount: float, prava_txn: str | None = None) -> None:
