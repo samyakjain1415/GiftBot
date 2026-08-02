@@ -106,18 +106,44 @@ async def _converse(phone: str, text: str) -> None:
             await client.send_text(phone, OUTAGE)
 
 
-def _process(payload: dict) -> None:
-    if payload.get("event_type") != "message.received":
-        return
+def extract(payload: dict) -> tuple[str, str] | None:
+    """Pull (sender, text) out of a message.received event.
+
+    Field names come from a captured live payload, not the docs: the sender is
+    data.sender_handle.handle (there is no data.from), and the chat is
+    data.chat.id (there is no data.chat_id).
+    """
+    event = payload.get("event_type")
+    if event != "message.received":
+        logger.info("ignoring event_type=%s", event)
+        return None
+
     data = payload.get("data") or {}
-    phone = data.get("from")
+    if data.get("direction") == "outbound":
+        return None  # our own message echoed back
+
+    sender = (data.get("sender_handle") or {}).get("handle")
     text = " ".join(
         part.get("value", "")
         for part in (data.get("parts") or [])
         if part.get("type") == "text"
     ).strip()
-    if not (phone and text):
+
+    if not (sender and text):
+        logger.warning(
+            "unusable payload: sender=%r text=%r data keys=%s",
+            sender, text, sorted(data),
+        )
+        return None
+    return sender, text
+
+
+def _process(payload: dict) -> None:
+    parsed = extract(payload)
+    if parsed is None:
         return
+    phone, text = parsed
+    logger.info("linq inbound from %s: %r", phone, text[:80])
     try:
         asyncio.run(_converse(phone, text))
     except Exception:
