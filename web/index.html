@@ -313,7 +313,12 @@
     </div>
 
     <p id="connect-status" class="tiny-status"></p>
-    <div id="tg-ok" class="ok" hidden style="margin-top:12px">✓ Connected</div>
+    <div id="conn-ok" class="ok" hidden style="margin-top:12px">
+      ✓ Connected: <span id="conn-list"></span>
+    </div>
+    <p class="fineprint" style="margin-top:10px">
+      Connect as many as you like — GiftBot will reach you on each.
+    </p>
   </section>
 
   <!-- STEP 3 -->
@@ -379,9 +384,13 @@
   var KEY = 'giftbot.setup.v1';
   var step = 1;
   var friends = [];
+  var CHANNELS = { telegram: 'Telegram', imessage: 'SMS / iMessage' };
   var state = {
-    calendar: false, telegram: false, prava: false, cap: 50,
-    token: null, telegramLink: null, imessageLink: null
+    calendar: false, prava: false, cap: 50,
+    // Tokens are single-use, so each channel gets its own.
+    connected: {},   // channel -> true
+    tokens: {},      // channel -> token
+    links: {}        // channel -> deep link
   };
 
   var $ = function (s) { return document.querySelector(s); };
@@ -404,27 +413,26 @@
       if (Array.isArray(saved.friends)) friends = saved.friends;
       if (saved.state) {
         state.calendar = !!saved.state.calendar;
-        state.telegram = !!saved.state.telegram;
         state.prava = !!saved.state.prava;
         if (saved.state.cap > 0) state.cap = saved.state.cap;
-        state.token = saved.state.token || null;
-        state.telegramLink = saved.state.telegramLink || null;
-        state.imessageLink = saved.state.imessageLink || null;
+        state.connected = saved.state.connected || {};
+        state.tokens = saved.state.tokens || {};
+        state.links = saved.state.links || {};
       }
       if (saved.step >= 1 && saved.step <= 4) step = saved.step;
     } catch (e) { /* corrupt payload — start fresh rather than break */ }
   }
 
   function restoreUI() {
-    if (state.telegram) {
-      $('#tg-ok').hidden = false;
-      $('#btn-telegram').disabled = true;
-      $('#btn-imessage').disabled = true;
-    } else if (state.token) {
-      // Returned from the messaging app without having sent it yet.
-      connectStatus('Waiting for you to send the message…');
-      watchForClaim();
-    }
+    drawConnections();
+    // Resume watching any channel opened but not yet confirmed — the user may
+    // have switched to Messages and come back.
+    Object.keys(state.tokens).forEach(function (c) {
+      if (!state.connected[c]) {
+        connectStatus('Waiting for you to send the message…');
+        watchForClaim(c);
+      }
+    });
     $('#pcap').value = state.cap;
     if (state.prava) {
       $('#cap-echo').textContent = '$' + Number(state.cap).toFixed(0);
@@ -435,11 +443,20 @@
     }
   }
 
+  function anyConnected() {
+    return Object.keys(state.connected).some(function (c) { return state.connected[c]; });
+  }
+
   function complete(n) {
     if (n === 1) return friends.length > 0 || state.calendar;
-    if (n === 2) return state.telegram;
+    if (n === 2) return anyConnected();
     if (n === 3) return state.prava;
     return true;
+  }
+
+  function anyToken() {
+    var keys = Object.keys(state.tokens);
+    return keys.length ? state.tokens[keys[0]] : null;
   }
 
   function render() {
@@ -519,7 +536,7 @@
   // The token is minted here so the deep link can carry it: tapping either
   // button lands the user in a conversation that is already onboarded, instead
   // of asking them to find the bot and type a command.
-  var pollTimer = null;
+  var pollTimers = {};
 
   function connectStatus(msg, isError) {
     var el = $('#connect-status');
@@ -527,34 +544,52 @@
     el.classList.toggle('err', !!isError);
   }
 
-  function markConnected() {
-    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-    state.telegram = true;
-    connectStatus('');
-    $('#tg-ok').hidden = false;
-    $('#btn-telegram').disabled = true;
-    $('#btn-imessage').disabled = true;
-    save();
-    render();
-    announce('Connected');
+  function buttonFor(which) {
+    return $(which === 'imessage' ? '#btn-imessage' : '#btn-telegram');
   }
 
-  // Poll until the bot actually redeems the token. This is what makes the tick
-  // truthful — previously the user just asserted they had done it.
-  function watchForClaim() {
-    if (pollTimer) clearInterval(pollTimer);
+  function drawConnections() {
+    var names = Object.keys(state.connected)
+      .filter(function (c) { return state.connected[c]; })
+      .map(function (c) { return CHANNELS[c] || c; });
+    $('#conn-ok').hidden = names.length === 0;
+    $('#conn-list').textContent = names.join(' · ');
+    Object.keys(CHANNELS).forEach(function (c) {
+      buttonFor(c).disabled = !!state.connected[c];
+    });
+  }
+
+  function markConnected(which) {
+    if (pollTimers[which]) { clearInterval(pollTimers[which]); delete pollTimers[which]; }
+    state.connected[which] = true;
+    connectStatus('');
+    drawConnections();
+    save();
+    render();
+    announce((CHANNELS[which] || which) + ' connected');
+  }
+
+  // Poll until the bot actually redeems that channel's token. This is what makes
+  // the tick truthful — previously the user just asserted they had done it.
+  function watchForClaim(which) {
+    if (pollTimers[which]) clearInterval(pollTimers[which]);
     var tries = 0;
-    pollTimer = setInterval(function () {
-      if (++tries > 60) { clearInterval(pollTimer); pollTimer = null; return; }
-      fetch('/api/setup/' + encodeURIComponent(state.token))
+    pollTimers[which] = setInterval(function () {
+      if (++tries > 60 || !state.tokens[which]) {
+        clearInterval(pollTimers[which]);
+        delete pollTimers[which];
+        return;
+      }
+      fetch('/api/setup/' + encodeURIComponent(state.tokens[which]))
         .then(function (r) { return r.json(); })
-        .then(function (d) { if (d && d.claimed) markConnected(); })
+        .then(function (d) { if (d && d.claimed) markConnected(which); })
         .catch(function () { /* transient — keep polling */ });
     }, 2000);
   }
 
-  function ensureToken() {
-    if (state.token) return Promise.resolve(state);
+  // Each channel needs its own token: a claimed one cannot be redeemed twice.
+  function ensureToken(which) {
+    if (state.tokens[which]) return Promise.resolve(state.links[which]);
     return fetch('/api/setup', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -562,22 +597,21 @@
     }).then(function (r) {
       return r.json().then(function (d) {
         if (!r.ok) throw new Error(d.error || 'could not start setup');
-        state.token = d.token;
-        state.telegramLink = d.telegram_link;
-        state.imessageLink = d.imessage_link;
+        var link = which === 'imessage' ? d.imessage_link : d.telegram_link;
+        if (!link) throw new Error('that channel is not configured yet');
+        state.tokens[which] = d.token;
+        state.links[which] = link;
         save();
-        return state;
+        return link;
       });
     });
   }
 
   function connectVia(which) {
     connectStatus('Opening…');
-    ensureToken().then(function (s) {
-      var url = which === 'imessage' ? s.imessageLink : s.telegramLink;
-      if (!url) throw new Error('that channel is not configured yet');
+    ensureToken(which).then(function (url) {
       connectStatus('Waiting for you to send the message…');
-      watchForClaim();
+      watchForClaim(which);
       window.location.href = url;
     }).catch(function (err) {
       connectStatus(err.message, true);
@@ -624,13 +658,14 @@
     announce('Prava approved, limit ' + cap + ' dollars per gift');
 
     // Persist the cap so the bot can skip asking for a budget every time.
-    if (state.token) {
-      fetch('/api/setup/' + encodeURIComponent(state.token) + '/cap', {
+    // Applies to whichever setup exists; a claimed token routes it to the user.
+    Object.keys(state.tokens).forEach(function (c) {
+      fetch('/api/setup/' + encodeURIComponent(state.tokens[c]) + '/cap', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ cap: cap })
       }).catch(function () { /* cap is a convenience; the bot asks if it is missing */ });
-    }
+    });
   });
 
   // --- nav ---
@@ -639,11 +674,12 @@
   function finish() {
     // Connection already happened at step 2; this is just a way back in.
     var status = $('#link-status');
-    if (state.telegramLink) $('#tg-link').href = state.telegramLink;
-    status.textContent = state.token
+    var back = state.links.telegram || state.links.imessage;
+    if (back) $('#tg-link').href = back;
+    status.textContent = anyToken()
       ? 'Your birthdays are saved.'
       : 'Setup was not saved — open the bot and add friends in chat.';
-    status.classList.toggle('err', !state.token);
+    status.classList.toggle('err', !anyToken());
   }
 
   $('#next').addEventListener('click', function () {
