@@ -146,6 +146,29 @@
   }
   .note code { background: rgba(0,0,0,.35); padding: 1px 6px; border-radius: 5px; font-size: 12.5px; }
 
+  .chips { display: flex; gap: 8px; margin-bottom: 10px; }
+  .chip {
+    width: auto; flex: 1; padding: 9px 0; font-size: 13.5px;
+    background: var(--surface-2);
+  }
+  .chip[aria-pressed="true"] {
+    border-color: var(--accent);
+    background: rgba(168, 85, 247, .16);
+    color: #fff;
+  }
+
+  .amount { position: relative; margin-bottom: 10px; }
+  .amount span {
+    position: absolute; left: 13px; top: 50%; transform: translateY(-50%);
+    color: var(--muted); font-size: 15px; pointer-events: none;
+  }
+  .amount input { padding-left: 27px; }
+
+  .fineprint {
+    color: var(--muted); font-size: 12px; line-height: 1.45;
+    margin: 0 0 14px;
+  }
+
   .ok {
     display: flex; align-items: center; gap: 9px;
     background: rgba(52, 211, 153, .1);
@@ -161,6 +184,34 @@
   .done-screen .big { font-size: 60px; line-height: 1; }
   .done-screen h2 { font-size: 24px; margin: 18px 0 10px; }
   .done-screen p { color: var(--muted); font-size: 14.5px; margin: 0 auto; max-width: 300px; }
+
+  .intro {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: var(--radius);
+    padding: 15px 16px;
+    margin-bottom: 22px;
+  }
+  .intro p { margin: 0 0 8px; font-size: 14px; color: var(--muted); }
+  .intro p strong { color: var(--text); font-weight: 600; }
+  .intro p:last-child { margin-bottom: 0; }
+  .intro .tiny { font-size: 12.5px; opacity: .8; }
+
+  .tg-link {
+    display: block; margin: 26px auto 0; max-width: 260px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-soft));
+    color: #fff; text-decoration: none; font-weight: 600;
+    padding: 13px 16px; border-radius: 11px;
+  }
+  .tg-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .reset {
+    width: auto; margin: 14px auto 0; padding: 7px 14px;
+    background: transparent; border-color: transparent;
+    color: var(--muted); font-size: 12.5px;
+  }
+  .reset:hover { color: var(--text); }
 
   .sr-only {
     position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
@@ -190,6 +241,16 @@
 
   <!-- STEP 1 -->
   <section class="step active" data-step="1" aria-labelledby="h1a">
+    <div class="intro">
+      <p><strong>GiftBot remembers birthdays and buys the gift for you.</strong></p>
+      <p>
+        Tell it who matters. When a birthday gets close it messages you, suggests
+        real gifts based on what they're into, and handles payment securely
+        through Prava — all inside your chat app.
+      </p>
+      <p class="tiny">Takes about a minute. Three steps, then you're done.</p>
+    </div>
+
     <h2 id="h1a">Add birthdays</h2>
     <p class="hint">Sync a calendar, or add friends by hand.</p>
 
@@ -257,25 +318,35 @@
 
   <!-- STEP 3 -->
   <section class="step" data-step="3" aria-labelledby="h3a">
-    <h2 id="h3a">Connect Prava</h2>
+    <h2 id="h3a">Set your spending limit</h2>
     <p class="hint">
-      GiftBot uses Prava to make secure payments on your behalf. Connect your Prava
-      account so payments happen instantly inside Telegram.
+      GiftBot pays through Prava. Set the most it may ever spend on a single gift —
+      the limit is enforced by the card network, not just by us.
     </p>
 
     <div class="card">
       <form id="prava-form">
-        <div style="margin-bottom:12px">
-          <label for="pemail">Email</label>
-          <input id="pemail" type="email" placeholder="you@example.com" required autocomplete="email">
+        <label for="pcap">Maximum per gift</label>
+        <div class="chips" role="group" aria-label="Quick amounts">
+          <button type="button" class="chip" data-cap="25">$25</button>
+          <button type="button" class="chip" data-cap="50">$50</button>
+          <button type="button" class="chip" data-cap="100">$100</button>
         </div>
-        <div style="margin-bottom:14px">
-          <label for="ppass">Password</label>
-          <input id="ppass" type="password" placeholder="••••••••" required autocomplete="current-password">
+        <div class="amount">
+          <span aria-hidden="true">$</span>
+          <input id="pcap" type="number" min="1" max="1000" step="1" value="50"
+                 required inputmode="decimal" aria-describedby="cap-help">
         </div>
-        <button type="submit" class="primary">Connect Prava</button>
+        <p id="cap-help" class="fineprint">
+          GiftBot can never charge more than this for one gift. You approve each
+          purchase with Face ID on Prava's own page — GiftBot never sees your card.
+        </p>
+        <button type="submit" class="primary">Approve with Prava</button>
       </form>
-      <div id="prava-ok" class="ok" hidden style="margin-top:14px">✓ Prava connected</div>
+
+      <div id="prava-ok" class="ok" hidden style="margin-top:14px">
+        ✓ Prava approved — up to <span id="cap-echo">$50</span> per gift
+      </div>
     </div>
   </section>
 
@@ -288,6 +359,10 @@
         GiftBot will message you on Telegram when a birthday is coming up.
         Nothing more to do here — close this tab.
       </p>
+      <a class="tg-link" href="https://t.me/GiftingPalBot" target="_blank" rel="noopener">
+        Open GiftBot in Telegram
+      </a>
+      <button type="button" id="reset" class="reset">Start over</button>
     </div>
   </section>
 
@@ -301,12 +376,54 @@
 
 <script>
 (function () {
+  var KEY = 'giftbot.setup.v1';
   var step = 1;
   var friends = [];
-  var state = { calendar: false, telegram: false, prava: false };
+  var state = { calendar: false, telegram: false, prava: false, cap: 50 };
 
   var $ = function (s) { return document.querySelector(s); };
   var live = $('#live');
+
+  // Phones drop tabs and people refresh mid-setup; losing every friend they
+  // typed is the fastest way to make someone abandon this.
+  function save() {
+    try {
+      localStorage.setItem(KEY, JSON.stringify({ step: step, friends: friends, state: state }));
+    } catch (e) { /* private mode / quota — setup still works, just not resumable */ }
+  }
+
+  function load() {
+    var raw;
+    try { raw = localStorage.getItem(KEY); } catch (e) { return; }
+    if (!raw) return;
+    try {
+      var saved = JSON.parse(raw);
+      if (Array.isArray(saved.friends)) friends = saved.friends;
+      if (saved.state) {
+        state.calendar = !!saved.state.calendar;
+        state.telegram = !!saved.state.telegram;
+        state.prava = !!saved.state.prava;
+        if (saved.state.cap > 0) state.cap = saved.state.cap;
+      }
+      if (saved.step >= 1 && saved.step <= 4) step = saved.step;
+    } catch (e) { /* corrupt payload — start fresh rather than break */ }
+  }
+
+  function restoreUI() {
+    if (state.telegram) {
+      $('#tg-ok').hidden = false;
+      $('#btn-telegram').disabled = true;
+      $('#tg-steps').hidden = true;
+    }
+    $('#pcap').value = state.cap;
+    if (state.prava) {
+      $('#cap-echo').textContent = '$' + Number(state.cap).toFixed(0);
+      $('#prava-ok').hidden = false;
+      $('#prava-form').querySelector('.primary').disabled = true;
+      $('#pcap').disabled = true;
+      document.querySelectorAll('.chip').forEach(function (c) { c.disabled = true; });
+    }
+  }
 
   function complete(n) {
     if (n === 1) return friends.length > 0 || state.calendar;
@@ -362,6 +479,7 @@
       rm.onclick = function () {
         friends.splice(i, 1);
         drawFriends();
+        save();
         render();
         announce(f.name + ' removed');
       };
@@ -382,6 +500,7 @@
     $('#fdate').value = '';
     $('#fname').focus();
     drawFriends();
+    save();
     render();
     announce(name + ' added');
   });
@@ -396,30 +515,66 @@
     $('#tg-steps').hidden = true;
     $('#tg-ok').hidden = false;
     $('#btn-telegram').disabled = true;
+    save();
     render();
     announce('Telegram connected');
   });
 
-  // --- step 3: prava (simulated — no API call yet) ---
+  // --- step 3: spending cap (simulated — real flow creates a Prava mandate) ---
+  var chips = document.querySelectorAll('.chip');
+
+  function syncChips() {
+    chips.forEach(function (c) {
+      c.setAttribute('aria-pressed', String(c.dataset.cap === $('#pcap').value));
+    });
+  }
+
+  chips.forEach(function (c) {
+    c.addEventListener('click', function () {
+      $('#pcap').value = c.dataset.cap;
+      syncChips();
+    });
+  });
+  $('#pcap').addEventListener('input', syncChips);
+  syncChips();
+
   $('#prava-form').addEventListener('submit', function (e) {
     e.preventDefault();
+    var cap = parseFloat($('#pcap').value);
+    if (!(cap > 0)) return;
+
+    // Real flow: POST /v1/sessions with a mandate_setup block, then send the
+    // user to the returned approval URL to confirm with a passkey.
     state.prava = true;
+    state.cap = cap;
+    $('#cap-echo').textContent = '$' + cap.toFixed(0);
     $('#prava-ok').hidden = false;
-    $('#prava-form').querySelector('button').disabled = true;
-    $('#pemail').disabled = true;
-    $('#ppass').disabled = true;
+    $('#prava-form').querySelector('.primary').disabled = true;
+    $('#pcap').disabled = true;
+    chips.forEach(function (c) { c.disabled = true; });
+    save();
     render();
-    announce('Prava connected');
+    announce('Prava approved, limit ' + cap + ' dollars per gift');
   });
 
   // --- nav ---
   $('#next').addEventListener('click', function () {
-    if (step < 4 && complete(step)) { step++; render(); window.scrollTo(0, 0); }
+    if (step < 4 && complete(step)) { step++; save(); render(); window.scrollTo(0, 0); }
   });
   $('#back').addEventListener('click', function () {
-    if (step > 1) { step--; render(); window.scrollTo(0, 0); }
+    if (step > 1) { step--; save(); render(); window.scrollTo(0, 0); }
   });
 
+  $('#reset').addEventListener('click', function () {
+    try { localStorage.removeItem(KEY); } catch (e) {}
+    location.reload();
+  });
+
+  // --- boot ---
+  load();
+  drawFriends();
+  restoreUI();
+  syncChips();
   render();
 })();
 </script>

@@ -144,6 +144,31 @@ def test_webhook_signature_verification():
     assert not linq_webhook.verify_signature({}, body, secret), "missing headers accepted"
 
 
+def test_extract_real_linq_payload():
+    """Shape captured from a live Linq webhook — the docs implied data.from, which
+    does not exist, and guessing it silently dropped every inbound message."""
+    live = {
+        "api_version": "v3",
+        "event_type": "message.received",
+        "data": {
+            "chat": {"id": "e1d73c85-2191-425a-b1bb-ea3e891316c2", "is_group": False},
+            "direction": "inbound",
+            "id": "d2d2c5a9-7b1a-4ebf-9c7f-f33ce42770d9",
+            "parts": [{"type": "text", "value": "Hey", "text_decorations": None}],
+            "sender_handle": {"handle": "+918527809319", "is_me": False},
+        },
+    }
+    assert linq_webhook.extract(live) == ("+918527809319", "Hey")
+
+    # Our own outbound echo must not be treated as user input.
+    echo = {"event_type": "message.received",
+            "data": dict(live["data"], direction="outbound")}
+    assert linq_webhook.extract(echo) is None
+
+    assert linq_webhook.extract({"event_type": "message.delivered"}) is None
+    assert linq_webhook.extract({"event_type": "message.received", "data": {}}) is None
+
+
 def test_keyboard_becomes_numbered_list():
     """iMessage has no buttons, so options must survive as numbered text."""
     phone = "+15551234567"
@@ -272,6 +297,7 @@ async def main():
     await test_search_without_key_is_silent()
     test_affordable_never_empty()
     test_webhook_signature_verification()
+    test_extract_real_linq_payload()
     test_keyboard_becomes_numbered_list()
     test_checkout_url_included_as_link()
     await test_poll_survives_transient_outage()
