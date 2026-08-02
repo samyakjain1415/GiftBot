@@ -7,12 +7,15 @@ from core import gifts, prava
 from core.db import (
     claim_setup,
     create_order,
+    get_friend,
     get_spend_cap,
     resume_reminder,
     save_context,
     seed_ashna,
+    soonest_friend,
     upsert_user,
 )
+from core.scheduler import reminder_text
 
 logger = logging.getLogger(__name__)
 
@@ -145,9 +148,11 @@ async def handle(event: NormalizedEvent) -> BotResponse:
         )
 
     if text == "/test":
-        friend_id = seed_ashna(db_user_id)
-        sess.update({"state": "REMINDED", "friend_id": friend_id})
-        return BotResponse("🎂 Ashna's birthday is in 6 days! What are her interests or hobbies?")
+        # Demo against a real birthday when the user has one; Ashna is only a
+        # stand-in for an account with nothing in it yet.
+        friend = soonest_friend(db_user_id) or get_friend(seed_ashna(db_user_id))
+        sess.update({"state": "REMINDED", "friend_id": friend["id"]})
+        return BotResponse(reminder_text(friend["name"], friend["birthday"]))
 
     if state == "REMINDED":
         return await _accept_context(sess, db_user_id, sess["friend_id"], text)
@@ -257,9 +262,10 @@ async def await_payment(user_id: str) -> BotResponse:
         sess["friend_id"], sess["pending_gift"], sess["pending_amount"], line_item["txn_ref_id"]
     )
     sess["state"] = "CONFIRMED"
+    friend = get_friend(sess["friend_id"])
     return BotResponse(
         f"✅ Prava sandbox payment completed — test mode\n\n"
-        f"🎁 {sess['pending_gift']} for Ashna\n"
+        f"🎁 {sess['pending_gift']} for {friend['name'] if friend else 'your friend'}\n"
         f"🏪 {sess['pending_merchant']}\n"
         f"Session: {session_id}\n"
         f"Txn ref: {line_item['txn_ref_id']}\n\n"

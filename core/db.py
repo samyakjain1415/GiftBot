@@ -175,6 +175,31 @@ def claim_reminder(reminder_id: int) -> bool:
         return cur.rowcount == 1
 
 
+def get_friend(friend_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id, name, birthday FROM friends WHERE id = ?", (friend_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def soonest_friend(user_id: int) -> dict | None:
+    """Whoever's birthday lands next — what /test should demo with.
+
+    Ordering happens in Python because the stored birthday carries a birth year;
+    SQL would sort by that rather than by the next occurrence.
+    """
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, name, birthday FROM friends"
+            " WHERE user_id = ? AND birthday IS NOT NULL",
+            (user_id,),
+        ).fetchall()
+    dated = [(next_birthday(r["birthday"]), dict(r)) for r in rows]
+    dated = [pair for pair in dated if pair[0]]
+    return min(dated, key=lambda pair: pair[0])[1] if dated else None
+
+
 def seed_ashna(user_id: int) -> int:
     """Reuse this user's Ashna if present.
 

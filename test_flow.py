@@ -532,6 +532,28 @@ def test_setup_status_and_cap_attach():
     assert onboarding.set_cap("unknown", b'{"cap": 20}')[0] == 404
 
 
+def test_soonest_friend_ignores_birth_year():
+    """/test demos the next birthday to arrive, which is not the earliest
+    stored date: the birth years here are arranged so that sorting on the raw
+    birthday column would answer "Far" instead of "Near"."""
+    today = date.today()
+    friends = [
+        {"name": "Near", "date": (today + timedelta(days=3)).replace(year=2005).isoformat()},
+        {"name": "Mid", "date": (today + timedelta(days=40)).replace(year=1990).isoformat()},
+        {"name": "Far", "date": (today + timedelta(days=200)).replace(year=1975).isoformat()},
+    ]
+    uid = db.upsert_user("soonest_user", "telegram")
+    db.claim_setup(db.create_setup({"friends": friends}), uid)
+
+    assert sorted(f["birthday"] for f in db.list_friends(uid))[0].startswith("1975")
+    assert db.soonest_friend(uid)["name"] == "Near"
+
+    # An account with nothing in it falls back to the seeded stand-in.
+    empty = db.upsert_user("empty_user", "telegram")
+    assert db.soonest_friend(empty) is None
+    assert db.get_friend(db.seed_ashna(empty))["name"] == "Ashna"
+
+
 def test_setup_token_is_single_use():
     token = db.create_setup({"friends": [{"name": "Meera", "date": "2026-09-09"}], "cap": 40})
     uid = db.upsert_user("web_user_1")
@@ -680,6 +702,7 @@ async def main():
     test_clean_friends_rejects_bad_input()
     test_setup_api_accepts_empty_and_rejects_junk()
     test_setup_status_and_cap_attach()
+    test_soonest_friend_ignores_birth_year()
     test_setup_token_is_single_use()
     await test_start_with_token_onboards_user()
     test_webhook_signature_verification()
