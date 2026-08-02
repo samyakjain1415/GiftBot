@@ -9,10 +9,12 @@ connection actually happened.
 import json
 import logging
 import os
+from html import escape
 from pathlib import Path
 from urllib.parse import quote
 
-from core.db import attach_cap, create_setup, setup_status
+from core import calendars
+from core.db import attach_cap, create_setup, merge_friends, setup_status
 
 logger = logging.getLogger(__name__)
 
@@ -67,9 +69,9 @@ def create_setup_token(body: bytes) -> tuple[int, dict]:
     except json.JSONDecodeError:
         return 400, {"error": "invalid json"}
 
+    # An empty setup is legitimate: calendar sync needs somewhere to put the
+    # birthdays it finds, and that happens before any are entered by hand.
     friends = _clean_friends(data.get("friends"))
-    if not friends:
-        return 400, {"error": "at least one friend with a name and date is required"}
 
     cap = data.get("cap")
     try:
@@ -96,6 +98,71 @@ def _sms_link(token: str) -> str | None:
     if not number:
         return None
     return f"sms:{number}&body=" + quote(f"/start {token}")
+
+
+def calendar_start(provider: str, token: str) -> tuple[int, str]:
+    """Where to send the browser to begin calendar consent. (status, location)."""
+    if provider not in calendars.PROVIDERS:
+        return 404, ""
+    if not calendars.configured(provider):
+        return 503, ""
+    if setup_status(token) is None:
+        return 404, ""
+    # state carries which setup and which provider through the round trip.
+    return 302, calendars.auth_url(provider, f"{provider}:{token}")
+
+
+async def calendar_callback(code: str, state: str) -> tuple[int, str]:
+    """Finish consent: read birthdays and store them. (status, html)."""
+    provider, _, token = state.partition(":")
+    if provider not in calendars.PROVIDERS or not token:
+        return 400, _result_page("Something went wrong", "That link was malformed.")
+    try:
+        access = await calendars.exchange_code(provider, code)
+        found = await calendars.fetch_birthdays(provider, access)
+    except Exception:
+        logger.exception("calendar sync failed for %s", provider)
+        return 502, _result_page(
+            "Couldn't read your calendar",
+            "The connection failed. You can close this and add birthdays by hand.",
+        )
+
+    added = merge_friends(token, found)
+    logger.info("%s sync stored %d of %d birthdays", provider, added, len(found))
+    if not found:
+        return 200, _result_page(
+            "No birthdays found",
+            "We couldn't see any birthday events in that calendar. "
+            "Close this tab and add them by hand.",
+        )
+    return 200, _result_page(
+        f"Added {added} birthday{'s' if added != 1 else ''}",
+        "Head back to finish setting up.",
+        [f["name"] for f in found][:12],
+    )
+
+
+def _result_page(title: str, message: str, names: list[str] | None = None) -> str:
+    items = ""
+    if names:
+        rows = "".join(f"<li>{escape(n)}</li>" for n in names)
+        items = f"<ul>{rows}</ul>"
+    return f"""<!doctype html><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GiftBot</title>
+<style>
+ body{{margin:0;min-height:100vh;display:grid;place-items:center;background:#0c0a14;
+ color:#ece9f5;font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:24px}}
+ .c{{max-width:340px;text-align:center}} h1{{font-size:20px;margin:14px 0 8px}}
+ p{{color:#9b93b4;font-size:14px;margin:0}} .i{{font-size:44px}}
+ ul{{list-style:none;padding:0;margin:18px 0 0;text-align:left}}
+ li{{background:#1e1830;border:1px solid #2c2340;border-radius:10px;
+ padding:9px 12px;margin-bottom:6px;font-size:14px}}
+ a{{display:block;margin-top:22px;background:linear-gradient(135deg,#a855f7,#7c3aed);
+ color:#fff;text-decoration:none;font-weight:600;padding:13px;border-radius:11px}}
+</style>
+<div class="c"><div class="i">🎂</div><h1>{escape(title)}</h1>
+<p>{escape(message)}</p>{items}<a href="/">Back to setup</a></div>"""
 
 
 def check_status(token: str) -> tuple[int, dict]:

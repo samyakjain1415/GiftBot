@@ -258,16 +258,74 @@ def claim_setup(token: str, user_id: int) -> dict | None:
     return payload
 
 
+def merge_friends(token: str, friends: list[dict]) -> int:
+    """Add friends to a setup, whether or not it has been claimed yet.
+
+    Calendar sync can happen before or after the user connects a messaging
+    channel, so the destination depends on the setup's state: an unclaimed
+    setup takes them into its payload, a claimed one straight onto the user.
+    Returns how many were stored.
+    """
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT payload, claimed_by FROM setups WHERE token = ?", (token,)
+        ).fetchone()
+        if row is None:
+            return 0
+        claimed_by = row["claimed_by"]
+
+        if claimed_by is None:
+            payload = json.loads(row["payload"])
+            existing = {f["name"] for f in payload.get("friends", [])}
+            fresh = [f for f in friends if f["name"] not in existing]
+            payload.setdefault("friends", []).extend(fresh)
+            conn.execute(
+                "UPDATE setups SET payload = ? WHERE token = ?",
+                (json.dumps(payload), token),
+            )
+            return len(fresh)
+
+        stored = []
+        for friend in friends:
+            name, birthday = friend.get("name"), friend.get("date")
+            if not (name and birthday):
+                continue
+            found = conn.execute(
+                "SELECT id FROM friends WHERE user_id = ? AND name = ?", (claimed_by, name)
+            ).fetchone()
+            if found:
+                conn.execute(
+                    "UPDATE friends SET birthday = ? WHERE id = ?", (birthday, found["id"])
+                )
+                stored.append((found["id"], birthday))
+            else:
+                cur = conn.execute(
+                    "INSERT INTO friends (user_id, name, birthday) VALUES (?, ?, ?)",
+                    (claimed_by, name, birthday),
+                )
+                stored.append((cur.lastrowid, birthday))
+
+    for friend_id, birthday in stored:
+        schedule_reminder(friend_id, birthday)
+    return len(stored)
+
+
 def setup_status(token: str) -> dict | None:
     """Whether a setup token has been redeemed yet — lets the page confirm the
     messaging connection instead of asking the user to self-certify it."""
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT claimed_by FROM setups WHERE token = ?", (token,)
+            "SELECT payload, claimed_by FROM setups WHERE token = ?", (token,)
         ).fetchone()
         if row is None:
             return None
-        return {"claimed": row["claimed_by"] is not None}
+        claimed_by = row["claimed_by"]
+        if claimed_by is None:
+            names = [f.get("name") for f in json.loads(row["payload"]).get("friends", [])]
+        else:
+            names = [r["name"] for r in conn.execute(
+                "SELECT name FROM friends WHERE user_id = ? ORDER BY name", (claimed_by,))]
+        return {"claimed": claimed_by is not None, "friends": [n for n in names if n]}
 
 
 def attach_cap(token: str, cap: float) -> bool:

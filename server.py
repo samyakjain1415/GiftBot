@@ -14,6 +14,7 @@ import os
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs
 
 from dotenv import load_dotenv
 
@@ -58,8 +59,40 @@ class Router(BaseHTTPRequestHandler):
         elif path.startswith("/api/setup/"):
             token = path[len("/api/setup/"):].strip("/")
             self._json(*onboarding.check_status(token))
+        elif path.startswith("/connect/"):
+            self._calendar_start(path[len("/connect/"):].strip("/"))
+        elif path == "/oauth/callback":
+            self._calendar_callback()
         else:
             self._send(404, b"not found")
+
+    def _query(self) -> dict:
+        _, _, raw = self.path.partition("?")
+        return {k: v[0] for k, v in parse_qs(raw).items()}
+
+    def _calendar_start(self, provider: str) -> None:
+        token = self._query().get("token", "")
+        status, location = onboarding.calendar_start(provider, token)
+        if status != 302:
+            self._send(status, b"calendar sync unavailable")
+            return
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.end_headers()
+
+    def _calendar_callback(self) -> None:
+        params = self._query()
+        if params.get("error") or not params.get("code"):
+            self._send(400, b"calendar access was declined")
+            return
+        try:
+            status, html = asyncio.run(
+                onboarding.calendar_callback(params["code"], params.get("state", ""))
+            )
+        except Exception:
+            logger.exception("calendar callback failed")
+            status, html = 500, "<p>Something went wrong.</p>"
+        self._send(status, html.encode(), "text/html; charset=utf-8")
 
     def do_POST(self):  # noqa: N802
         path = self.path.split("?", 1)[0]

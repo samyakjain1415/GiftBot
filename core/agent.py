@@ -1,4 +1,6 @@
 import logging
+import os
+import re
 from dataclasses import dataclass, field
 
 from core import gifts, prava
@@ -53,6 +55,20 @@ async def _show_gifts(sess: dict) -> BotResponse:
     sess["picks"] = {p["id"]: p for p in picks}
     sess["state"] = "SHOWING_GIFTS"
     return BotResponse(_picks_text(picks), keyboard=_keyboard(picks))
+
+
+def _user_email(user_id: str) -> str:
+    """Email to attach to a Prava session.
+
+    Neither Telegram nor Linq exposes an email address. example.com is
+    RFC-reserved and undeliverable, which card networks can reject when issuing
+    credentials, so GIFTBOT_USER_EMAIL should hold a real address.
+    """
+    configured = os.getenv("GIFTBOT_USER_EMAIL")
+    if configured:
+        return configured
+    handle = re.sub(r"[^a-z0-9]", "", user_id.lower()) or "user"
+    return f"giftbot.{handle}@gmail.com"
 
 
 def begin_reminder(user_id: str, reminder: dict) -> None:
@@ -123,8 +139,7 @@ async def handle(event: NormalizedEvent) -> BotResponse:
         amount = f"{float(item['price']):.2f}"
         session = await prava.create_session(
             user_id=event.user_id,
-            # Telegram exposes no email; sandbox only needs a well-formed one.
-            user_email=f"tg{event.user_id}@example.com",
+            user_email=_user_email(event.user_id),
             amount=amount,
             description=item["name"],
             merchant={

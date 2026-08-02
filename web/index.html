@@ -261,13 +261,14 @@
     <p class="hint">Sync a calendar, or add friends by hand.</p>
 
     <div class="pair">
-      <button class="soon" disabled aria-label="Connect Google Calendar, coming soon">
-        <span class="provider"><span class="ico">📅</span>Google<span class="badge">Soon</span></span>
+      <button id="btn-google" aria-label="Connect Google Calendar">
+        <span class="provider"><span class="ico">📅</span>Google</span>
       </button>
       <button class="soon" disabled aria-label="Connect Outlook, coming soon">
         <span class="provider"><span class="ico">📧</span>Outlook<span class="badge">Soon</span></span>
       </button>
     </div>
+    <p id="cal-status" class="tiny-status" style="margin:0 0 14px"></p>
 
     <div class="divider">or add manually</div>
 
@@ -396,6 +397,15 @@
   var $ = function (s) { return document.querySelector(s); };
   var live = $('#live');
 
+  // ngrok's free tier serves a browser interstitial instead of the response;
+  // this header opts out, and is harmless anywhere else.
+  function api(path, options) {
+    var opts = options || {};
+    opts.headers = opts.headers || {};
+    opts.headers['ngrok-skip-browser-warning'] = '1';
+    return fetch(path, opts);
+  }
+
   // Phones drop tabs and people refresh mid-setup; losing every friend they
   // typed is the fastest way to make someone abandon this.
   function save() {
@@ -517,6 +527,24 @@
     });
   }
 
+  // --- step 1: calendar sync ---
+  // Consent happens on the provider's site, so we need a setup to attach the
+  // birthdays to before leaving. The same token later carries the deep link.
+  function connectCalendar(provider) {
+    var el = $('#cal-status');
+    el.classList.remove('err');
+    el.textContent = 'Opening ' + provider + '…';
+    ensureToken('telegram').then(function () {
+      window.location.href = '/connect/' + provider +
+        '?token=' + encodeURIComponent(state.tokens.telegram);
+    }).catch(function (err) {
+      el.classList.add('err');
+      el.textContent = err.message;
+    });
+  }
+
+  $('#btn-google').addEventListener('click', function () { connectCalendar('google'); });
+
   $('#friend-form').addEventListener('submit', function (e) {
     e.preventDefault();
     var name = $('#fname').value.trim();
@@ -580,7 +608,7 @@
         delete pollTimers[which];
         return;
       }
-      fetch('/api/setup/' + encodeURIComponent(state.tokens[which]))
+      api('/api/setup/' + encodeURIComponent(state.tokens[which]))
         .then(function (r) { return r.json(); })
         .then(function (d) { if (d && d.claimed) markConnected(which); })
         .catch(function () { /* transient — keep polling */ });
@@ -590,7 +618,7 @@
   // Each channel needs its own token: a claimed one cannot be redeemed twice.
   function ensureToken(which) {
     if (state.tokens[which]) return Promise.resolve(state.links[which]);
-    return fetch('/api/setup', {
+    return api('/api/setup', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ friends: friends })
@@ -660,7 +688,7 @@
     // Persist the cap so the bot can skip asking for a budget every time.
     // Applies to whichever setup exists; a claimed token routes it to the user.
     Object.keys(state.tokens).forEach(function (c) {
-      fetch('/api/setup/' + encodeURIComponent(state.tokens[c]) + '/cap', {
+      api('/api/setup/' + encodeURIComponent(state.tokens[c]) + '/cap', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ cap: cap })
@@ -700,12 +728,37 @@
     location.reload();
   });
 
+  // Birthdays synced from a calendar are stored server-side, so on return from
+  // the provider the page has to ask what actually landed.
+  function refreshSynced() {
+    var token = state.tokens.telegram || anyToken();
+    if (!token) return;
+    api('/api/setup/' + encodeURIComponent(token))
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d || !d.friends) return;
+        var known = {};
+        friends.forEach(function (f) { known[f.name] = true; });
+        var extra = d.friends.filter(function (n) { return !known[n]; });
+        if (!extra.length) return;
+        state.calendar = true;
+        $('#cal-status').textContent =
+          extra.length + ' birthday' + (extra.length === 1 ? '' : 's') +
+          ' synced from your calendar: ' + extra.slice(0, 4).join(', ') +
+          (extra.length > 4 ? '…' : '');
+        save();
+        render();
+      })
+      .catch(function () { /* offline or opened as a file — manual entry still works */ });
+  }
+
   // --- boot ---
   load();
   drawFriends();
   restoreUI();
   syncChips();
   render();
+  refreshSynced();
 })();
 </script>
 </body>

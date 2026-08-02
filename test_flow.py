@@ -14,7 +14,7 @@ from pathlib import Path
 
 from adapters.linq import webhook as linq_webhook
 from adapters.web import onboarding
-from core import agent, db, gifts, prava, scheduler, search
+from core import agent, calendars, db, gifts, prava, scheduler, search
 
 calls: dict = {}
 
@@ -311,6 +311,68 @@ def test_reminder_wording():
     assert "today" in scheduler.reminder_text("Ashna", "1999-08-02", today)
 
 
+def test_birthday_name_extraction():
+    """Calendar events title occasions inconsistently; a wrong name means the
+    bot addresses the gift to the wrong person."""
+    assert calendars.extract_event("Ashna's birthday") == ("Ashna", "birthday")
+    assert calendars.extract_event("Birthday: Ravi Kumar") == ("Ravi Kumar", "birthday")
+    assert calendars.extract_event("Meera — Birthday") == ("Meera", "birthday")
+    assert calendars.extract_event("Nikhil Birthday") == ("Nikhil", "birthday")
+
+    # Anniversaries are gift-worthy too, including ordinals.
+    assert calendars.extract_event("Priya's anniversary") == ("Priya", "anniversary")
+    assert calendars.extract_event("Sam's 10th Anniversary") == ("Sam", "anniversary")
+
+    # Everything else must be ignored — a calendar is full of noise.
+    assert calendars.extract_event("Dentist appointment") is None
+    assert calendars.extract_event("Standup") is None
+    assert calendars.extract_event("") is None
+    assert calendars.extract_event("birthday") is None
+    assert calendars.extract_name("Ashna's birthday") == "Ashna"
+
+
+def test_holiday_calendars_are_excluded():
+    """Holiday calendars contain entries like "Hazrat Ali's Birthday" that parse
+    exactly like a friend's birthday — GiftBot must not offer to buy them a gift."""
+    assert calendars.is_personal_calendar("primary")
+    assert calendars.is_personal_calendar("addressbook#contacts@group.v.calendar.google.com")
+    assert calendars.is_personal_calendar("someone@gmail.com")
+
+    assert not calendars.is_personal_calendar("en.indian#holiday@group.v.calendar.google.com")
+    assert not calendars.is_personal_calendar("en.usa#holiday@group.v.calendar.google.com")
+
+    # The parser itself cannot tell the difference — that is why the filter is
+    # at calendar level.
+    assert calendars.extract_event("Hazrat Ali's Birthday") == ("Hazrat Ali", "birthday")
+
+
+def test_calendar_birthdays_merge_into_setup():
+    token = db.create_setup({"friends": [{"name": "Manual", "date": "2026-03-03"}]})
+    added = db.merge_friends(token, [
+        {"name": "FromCal", "date": "2026-09-09"},
+        {"name": "Manual", "date": "2026-03-03"},   # already there
+    ])
+    assert added == 1, "must not duplicate a friend already in the setup"
+
+    status = db.setup_status(token)
+    assert sorted(status["friends"]) == ["FromCal", "Manual"], status
+
+    # After claiming, calendar birthdays go straight onto the user and get
+    # reminders scheduled.
+    uid = db.upsert_user("cal_user", "telegram")
+    db.claim_setup(token, uid)
+    assert db.merge_friends(token, [{"name": "LateSync", "date": "2026-12-12"}]) == 1
+    names = [f["name"] for f in db.list_friends(uid)]
+    assert "LateSync" in names, names
+    with db.get_conn() as conn:
+        pending = conn.execute(
+            "SELECT COUNT(*) c FROM reminders r JOIN friends f ON f.id = r.friend_id"
+            " WHERE f.user_id = ? AND r.status = 'pending'", (uid,)).fetchone()["c"]
+    assert pending >= 1, "synced birthdays must be scheduled"
+
+    assert db.merge_friends("unknown-token", [{"name": "X", "date": "2026-01-01"}]) == 0
+
+
 def test_clean_friends_rejects_bad_input():
     """This payload comes from the open web — malformed entries must be dropped."""
     good = onboarding._clean_friends([
@@ -342,11 +404,16 @@ def test_clean_friends_rejects_bad_input():
     assert len(many) <= 50
 
 
-def test_setup_api_requires_a_valid_friend():
+def test_setup_api_accepts_empty_and_rejects_junk():
+    # Empty is legitimate: calendar sync creates a setup before any friend
+    # has been typed, then merges the birthdays it finds into it.
     status, body = onboarding.create_setup_token(b'{"friends": []}')
-    assert status == 400, body
-    status, _ = onboarding.create_setup_token(b'not json')
-    assert status == 400
+    assert status == 200, body
+    assert body["token"] and body["telegram_link"].endswith(body["token"])
+
+    assert onboarding.create_setup_token(b'not json')[0] == 400
+    assert onboarding.create_setup_token(b'x' * 70000)[0] == 413
+
     status, _ = onboarding.create_setup_token(b'{"friends":[{"name":"X","date":"2026-01-01"}]}')
     assert status == 200
 
@@ -360,7 +427,8 @@ def test_setup_status_and_cap_attach():
     token = body["token"]
     assert body["telegram_link"].endswith(token)
 
-    assert onboarding.check_status(token) == (200, {"claimed": False})
+    status, body = onboarding.check_status(token)
+    assert (status, body["claimed"], body["friends"]) == (200, False, ["Cap"]), body
     assert onboarding.check_status("nope")[0] == 404
 
     # Cap set before claiming lands in the payload and applies on claim.
@@ -368,7 +436,7 @@ def test_setup_status_and_cap_attach():
     uid = db.upsert_user("cap_user", "telegram")
     db.claim_setup(token, uid)
     assert db.get_spend_cap(uid) == 75
-    assert onboarding.check_status(token) == (200, {"claimed": True})
+    assert onboarding.check_status(token)[1]["claimed"] is True
 
     # Cap set after claiming must reach the user, not the spent payload.
     assert onboarding.set_cap(token, b'{"cap": 120}')[0] == 200
@@ -519,8 +587,11 @@ async def main():
     await test_scheduler_sends_once_and_only_to_reachable_users()
     await test_reply_recovers_after_restart()
     test_reminder_wording()
+    test_birthday_name_extraction()
+    test_holiday_calendars_are_excluded()
+    test_calendar_birthdays_merge_into_setup()
     test_clean_friends_rejects_bad_input()
-    test_setup_api_requires_a_valid_friend()
+    test_setup_api_accepts_empty_and_rejects_junk()
     test_setup_status_and_cap_attach()
     test_setup_token_is_single_use()
     await test_start_with_token_onboards_user()
