@@ -55,6 +55,9 @@ class Router(BaseHTTPRequestHandler):
                 self._send(500, b"page unavailable")
         elif path == "/health":
             self._json(200, {"ok": True})
+        elif path.startswith("/api/setup/"):
+            token = path[len("/api/setup/"):].strip("/")
+            self._json(*onboarding.check_status(token))
         else:
             self._send(404, b"not found")
 
@@ -70,8 +73,10 @@ class Router(BaseHTTPRequestHandler):
                 logger.exception("webhook handling failed")
                 self._send(500)
         elif path == "/api/setup":
-            status, payload = onboarding.create_setup_token(raw)
-            self._json(status, payload)
+            self._json(*onboarding.create_setup_token(raw))
+        elif path.startswith("/api/setup/") and path.endswith("/cap"):
+            token = path[len("/api/setup/"):-len("/cap")].strip("/")
+            self._json(*onboarding.set_cap(token, raw))
         else:
             self._send(404, b"not found")
 

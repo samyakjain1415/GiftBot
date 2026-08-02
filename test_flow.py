@@ -292,6 +292,34 @@ def test_setup_api_requires_a_valid_friend():
     assert status == 200
 
 
+def test_setup_status_and_cap_attach():
+    """The page polls status to confirm the connection instead of trusting a
+    checkbox, and the cap is chosen after the token may already be claimed."""
+    status, body = onboarding.create_setup_token(
+        b'{"friends":[{"name":"Cap","date":"2026-11-11"}]}')
+    assert status == 200
+    token = body["token"]
+    assert body["telegram_link"].endswith(token)
+
+    assert onboarding.check_status(token) == (200, {"claimed": False})
+    assert onboarding.check_status("nope")[0] == 404
+
+    # Cap set before claiming lands in the payload and applies on claim.
+    assert onboarding.set_cap(token, b'{"cap": 75}')[0] == 200
+    uid = db.upsert_user("cap_user", "telegram")
+    db.claim_setup(token, uid)
+    assert db.get_spend_cap(uid) == 75
+    assert onboarding.check_status(token) == (200, {"claimed": True})
+
+    # Cap set after claiming must reach the user, not the spent payload.
+    assert onboarding.set_cap(token, b'{"cap": 120}')[0] == 200
+    assert db.get_spend_cap(uid) == 120
+
+    assert onboarding.set_cap(token, b'{"cap": -5}')[0] == 400
+    assert onboarding.set_cap(token, b'{"cap": "abc"}')[0] == 400
+    assert onboarding.set_cap("unknown", b'{"cap": 20}')[0] == 404
+
+
 def test_setup_token_is_single_use():
     token = db.create_setup({"friends": [{"name": "Meera", "date": "2026-09-09"}], "cap": 40})
     uid = db.upsert_user("web_user_1")
@@ -432,6 +460,7 @@ async def main():
     test_reminder_wording()
     test_clean_friends_rejects_bad_input()
     test_setup_api_requires_a_valid_friend()
+    test_setup_status_and_cap_attach()
     test_setup_token_is_single_use()
     await test_start_with_token_onboards_user()
     test_webhook_signature_verification()

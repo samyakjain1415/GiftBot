@@ -55,6 +55,10 @@ def init_db() -> None:
                 claimed_by  INTEGER REFERENCES users(id)
             );
         """)
+        # Added after the original schema; SQLite has no ADD COLUMN IF NOT EXISTS.
+        columns = {r["name"] for r in conn.execute("PRAGMA table_info(users)")}
+        if "spend_cap" not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN spend_cap REAL")
 
 
 def upsert_user(external_id: str, platform: str = "telegram") -> int:
@@ -203,6 +207,10 @@ def claim_setup(token: str, user_id: int) -> dict | None:
             return None
         conn.execute("UPDATE setups SET claimed_by = ? WHERE token = ?", (user_id, token))
         payload = json.loads(row["payload"])
+        if payload.get("cap"):
+            conn.execute(
+                "UPDATE users SET spend_cap = ? WHERE id = ?", (payload["cap"], user_id)
+            )
 
         scheduled = []
         for friend in payload.get("friends", []):
@@ -229,6 +237,50 @@ def claim_setup(token: str, user_id: int) -> dict | None:
     for friend_id, birthday in scheduled:
         schedule_reminder(friend_id, birthday)
     return payload
+
+
+def setup_status(token: str) -> dict | None:
+    """Whether a setup token has been redeemed yet — lets the page confirm the
+    messaging connection instead of asking the user to self-certify it."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT claimed_by FROM setups WHERE token = ?", (token,)
+        ).fetchone()
+        if row is None:
+            return None
+        return {"claimed": row["claimed_by"] is not None}
+
+
+def attach_cap(token: str, cap: float) -> bool:
+    """Record a spending cap for a setup, before or after it is claimed.
+
+    The cap is chosen a step after the messaging connection, by which point the
+    token may already be redeemed, so it lands on the user rather than the
+    pending payload.
+    """
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT payload, claimed_by FROM setups WHERE token = ?", (token,)
+        ).fetchone()
+        if row is None:
+            return False
+        if row["claimed_by"] is not None:
+            conn.execute(
+                "UPDATE users SET spend_cap = ? WHERE id = ?", (cap, row["claimed_by"])
+            )
+        else:
+            payload = json.loads(row["payload"])
+            payload["cap"] = cap
+            conn.execute(
+                "UPDATE setups SET payload = ? WHERE token = ?", (json.dumps(payload), token)
+            )
+        return True
+
+
+def get_spend_cap(user_id: int) -> float | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT spend_cap FROM users WHERE id = ?", (user_id,)).fetchone()
+        return row["spend_cap"] if row and row["spend_cap"] else None
 
 
 def list_friends(user_id: int) -> list[dict]:

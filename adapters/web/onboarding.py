@@ -10,13 +10,23 @@ import json
 import logging
 import os
 from pathlib import Path
+from urllib.parse import quote
 
-from core.db import create_setup
+from core.db import attach_cap, create_setup, setup_status
 
 logger = logging.getLogger(__name__)
 
 PAGE = Path(__file__).resolve().parent.parent.parent / "web" / "index.html"
-BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "GiftingPalBot")
+
+
+def _bot_username() -> str:
+    return os.getenv("TELEGRAM_BOT_USERNAME", "GiftingPalBot")
+
+
+def _linq_number() -> str:
+    # Read on use, not at import: load_dotenv() runs after this module is
+    # imported, so a module-level read sees an empty environment.
+    return os.getenv("LINQ_PHONE_NUMBER", "")
 
 MAX_BODY = 64 * 1024      # an onboarding payload is tiny; refuse anything odd
 MAX_FRIENDS = 50
@@ -73,5 +83,39 @@ def create_setup_token(body: bytes) -> tuple[int, dict]:
     logger.info("created setup token for %d friend(s)", len(friends))
     return 200, {
         "token": token,
-        "deep_link": f"https://t.me/{BOT_USERNAME}?start={token}",
+        "telegram_link": f"https://t.me/{_bot_username()}?start={token}",
+        # iOS opens Messages with the recipient and body prefilled, so the user
+        # taps send rather than typing a token by hand.
+        "imessage_link": _sms_link(token),
+        "imessage_available": bool(_linq_number()),
     }
+
+
+def _sms_link(token: str) -> str | None:
+    number = _linq_number()
+    if not number:
+        return None
+    return f"sms:{number}&body=" + quote(f"/start {token}")
+
+
+def check_status(token: str) -> tuple[int, dict]:
+    """GET /api/setup/<token> -> {claimed}. The page polls this to confirm the
+    messaging connection really happened rather than trusting a checkbox."""
+    status = setup_status(token)
+    if status is None:
+        return 404, {"error": "unknown token"}
+    return 200, status
+
+
+def set_cap(token: str, body: bytes) -> tuple[int, dict]:
+    """POST /api/setup/<token>/cap -> {ok}."""
+    try:
+        data = json.loads(body or b"{}")
+        cap = float(data.get("cap"))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return 400, {"error": "invalid cap"}
+    if not (0 < cap <= 10000):
+        return 400, {"error": "cap out of range"}
+    if not attach_cap(token, cap):
+        return 404, {"error": "unknown token"}
+    return 200, {"ok": True}

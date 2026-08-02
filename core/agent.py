@@ -2,7 +2,14 @@ import logging
 from dataclasses import dataclass, field
 
 from core import gifts, prava
-from core.db import claim_setup, create_order, save_context, seed_ashna, upsert_user
+from core.db import (
+    claim_setup,
+    create_order,
+    get_spend_cap,
+    save_context,
+    seed_ashna,
+    upsert_user,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +109,17 @@ async def handle(event: NormalizedEvent) -> BotResponse:
 
     if state == "REMINDED":
         save_context(sess["friend_id"], text)
-        sess.update({"state": "ASKING_BUDGET", "context": text})
+        sess["context"] = text
+        # Someone who set a cap during onboarding has already answered this.
+        cap = get_spend_cap(db_user_id)
+        if cap:
+            sess["budget"] = cap
+            reply = await _show_gifts(sess)
+            return BotResponse(
+                f"Got it — working to your ${cap:.0f} limit.\n\n{reply.text}",
+                keyboard=reply.keyboard,
+            )
+        sess["state"] = "ASKING_BUDGET"
         return BotResponse("Got it. What's your budget? (e.g. $50)")
 
     if state == "ASKING_BUDGET":
